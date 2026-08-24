@@ -8,6 +8,13 @@
       "when": 1787480927442,
       "tag": "0000_living_reavers",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1787577979658,
+      "tag": "0001_yielding_roland_deschain",
+      "breakpoints": true
     }
   ]
 }

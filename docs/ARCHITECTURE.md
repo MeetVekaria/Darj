@@ -10,7 +10,7 @@ Browser
      ▼
 Vinext route handler
   demo-run authorization · deterministic rules · canonical hashing
-  synthetic signature · custody gateway · payment simulator · processor
+  Ed25519 demo signature · custody gateway · payment simulator · processor
      │                                      │
      ▼                                      ▼
 Cloudflare D1                           Cloudflare R2
@@ -28,19 +28,29 @@ An edit first reaches IndexedDB. Only after that succeeds does the interface say
 
 The server reads the newest draft and verified attachment manifest, sorts attachments by slot, canonicalises the normalised package, and hashes its exact bytes. A package row is never updated by product code. Edits create draft rows; they do not mutate a Mohar.
 
+### Signature boundary
+
+The server signs only the server-confirmed package hash with WebCrypto Ed25519 and immediately verifies it. The fixed demo key exists only to prove package binding and tamper detection; it is not a DSC, certificate chain, PKI integration or production key-custody design. Editing creates a new draft/package and invalidates the prior signature for submission.
+
 ### Custody boundary
 
-One D1 batch inserts the custody snapshot, receipt, payment intent, and completed submission attempt. Unique constraints prevent more than one custody snapshot or Rasid for a package. The first demo response is intentionally lost after commit; replaying the same idempotency key returns the existing receipt.
+One D1 batch inserts the custody snapshot, referentially linked receipt, payment intent, durable processing job, and completed submission attempt. Unique constraints prevent more than one custody snapshot or Rasid for a package. An injected pre-commit failure creates nothing. The first demo response is intentionally lost after commit; replaying the same idempotency key returns the existing receipt. Concurrent requests converge through the same constraints and replay path.
 
 ### State boundary
 
-Custody, payment and processing are separate records/events. The UI derives a journey label but never stores one ambiguous all-purpose status. `RECEIVED`, `PAID`, `PROCESSING DELAYED`, and `ACCEPTED` retain different events and meanings.
+Custody, payment and processing are separate records/events. The UI derives a journey label but never stores one ambiguous all-purpose status. `RECEIVED`, `PAID`, `PROCESSING DELAYED`, and `ACCEPTED` retain different events and meanings. Run-scoped SSE carries ordered event changes; the client falls back to five-second polling after a stream error.
 
 ## Persistence
 
-- D1: demo runs, draft snapshots, attachment metadata, packages, signatures, custody snapshots, receipts, attempts, payment intents/events and case events.
+- D1: demo runs, immutable draft snapshots, attachment metadata, packages, signatures, custody snapshots, receipts, submission/payment attempts, payment intents/events, durable processing jobs, ordered case events, rate limits and one-shot fault controls.
 - R2: synthetic PDF bytes. D1 stores authoritative metadata and ownership scope.
 - IndexedDB: the device-local recovery copy and persisted submission idempotency key. It is intentionally not the authority for custody, payment or processing.
+
+## Request security
+
+- The opaque run cookie is HTTP-only, SameSite Strict and Secure on HTTPS; the CSRF token uses a separate SameSite Strict cookie and matching request header.
+- Every mutation checks the current run, same-origin request and CSRF token. Login and demo-control counters use SHA-256 keys in D1.
+- A response proxy applies CSP, frame denial, MIME sniffing prevention, referrer policy and capability restrictions to pages and APIs.
 
 ## Feature gating
 

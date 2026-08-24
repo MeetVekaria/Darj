@@ -25,24 +25,28 @@ The app uses project-local Cloudflare D1 and R2 bindings supplied by the Sites d
 ```bash
 npm run typecheck
 npm run lint
-npm test
+npm run test:unit
+npm run test:e2e
 npm run build
 ```
+
+`test:e2e` runs the desktop Chromium release journeys plus a 360 px mobile project. Use `npm run test:all` for the unit and browser suites together.
 
 ## Implemented Round 1 surface
 
 - Isolated 24-hour synthetic demo runs and deterministic reset.
 - IndexedDB-first draft snapshots with separate local-save and server-sync states.
 - D1-backed immutable server draft versions with base-version conflict responses.
-- Three seeded synthetic PDFs stored in R2, with authoritative byte count, MIME and SHA-256 metadata.
+- Three seeded synthetic PDFs stored in R2, plus 5 MB P0 replacement upload with filename, MIME, PDF-byte, EOF, byte-count and SHA-256 verification.
 - 43 versioned deterministic Jaanch results and exact-field navigation.
 - Canonical package construction using RFC 8785 semantics and SHA-256 hashing.
-- Append-only sealed package and package-hash-bound synthetic signing adapter.
-- D1-batched custody, receipt, payment-intent and idempotency records.
+- Append-only sealed package and a real Ed25519 verification operation using a fixed, non-secret demo key that is explicitly not a DSC.
+- D1-batched custody, receipt, payment-intent, processing-job and idempotency records, with receipt-to-custody referential integrity.
 - Same-key replay, same-package replay and different-fingerprint rejection.
 - Intentional post-commit submission response loss with safe replay to the same Rasid.
 - Intentional payment callback loss with server reconciliation and no second payment request.
-- Separately recorded `RECEIVED`, `PAID`, `PROCESSING DELAYED`, `PROCESSING`, and `ACCEPTED` events.
+- Durable processing-job state plus separately recorded `RECEIVED`, `PAID`, `PROCESSING DELAYED`, `PROCESSING`, and `ACCEPTED` events delivered by SSE with polling fallback.
+- Same-origin mutation checks, double-submit CSRF protection, hashed login/control rate limits, strict cookies and security response headers.
 - Responsive filing register, prepare, Jaanch, Mohar, sign, Rasid, payment, processing, evidence, limitations and recovery views.
 - Print-safe A4 Rasid and persistent prototype disclosure.
 
@@ -58,6 +62,8 @@ P1 resumable TUS uploads, master-data drift and correction lineage remain disabl
 - Aadhaar-like, PAN-like and valid-looking CIN patterns are rejected on draft sync.
 - Uploads are scoped under `demo/{demoRunId}/{caseId}/...` and the server ignores client ownership metadata.
 - Session cookies are HTTP-only and same-site; hosted HTTPS requests add the secure flag.
+- Mutations require a same-origin request and matching readable/secure CSRF cookie token; login and demo controls are rate limited.
+- A response-header proxy applies CSP, frame denial, MIME sniffing prevention, referrer policy and browser capability restrictions.
 - No runtime server request targets a `.gov.in` host. Evidence links are user-clicked links only.
 - Critical failures use structured `DARJ_*` errors with stage, retry safety and a correlation ID.
 

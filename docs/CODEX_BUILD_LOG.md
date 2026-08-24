@@ -32,3 +32,21 @@
 - Browser QA completed at 1280 px and 360 px across the primary journey; no horizontal overflow or browser console errors were found.
 - Updated Next, React, Vinext, Vite and Cloudflare development tooling to patched compatible releases. The production dependency audit is clear; four moderate findings remain confined to the Drizzle migration CLI's legacy development-only esbuild loader, whose automated fix is an incompatible downgrade.
 - Publishing could not continue after approval to initialise the required local source history was declined. The validated local build and preview remain available; no public deployment is claimed.
+
+## 24 August 2026
+
+### P0 completion after source history became available
+
+- Re-audited the product against the full P0 release gate after the repository was initialised and pushed by the user.
+- Added Dexie/IndexedDB local recovery, offline-to-online sync, session-expiry recovery, field conflicts, validated JSON export/import and storage-failure blocking.
+- Added P0 replacement upload with stored-byte PDF sniffing and client/server SHA-256 agreement.
+- Replaced the signing placeholder with package-bound WebCrypto Ed25519 sign/verify behavior using a fixed synthetic demo key.
+- Added durable processing-job state, run-scoped SSE with polling fallback, atomic receipt referential integrity, payment attempt idempotency, rollback/serialization controls, CSRF/origin checks, rate limiting and response security headers.
+- Added direct routes for every P0 view plus hidden authenticated demo controls.
+
+### Release verification
+
+- Node invariant/security suite: 8 passed.
+- Playwright desktop/mobile matrix: 11 passed and 9 intentional cross-project skips.
+- Verified the primary ACCEPTED journey, two-session isolation, browser interruption, conflict resolution, session expiry, upload/edit-after-sign v24 behavior, transaction rollback, serialization retry, concurrent submission convergence, security boundaries, Axe route coverage and 360 px overflow.
+- TypeScript, ESLint and the production Vinext build pass.

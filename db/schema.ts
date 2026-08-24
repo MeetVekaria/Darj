@@ -1,4 +1,4 @@
-import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { foreignKey, index, integer, primaryKey, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 export const demoRuns = sqliteTable('demo_runs', {
   runId: text('run_id').primaryKey(),
@@ -72,6 +72,7 @@ export const receipts = sqliteTable('receipts', {
   primaryKey({ columns: [table.runId, table.receiptId] }),
   uniqueIndex('uniq_receipt_custody').on(table.runId, table.custodyId),
   uniqueIndex('uniq_receipt_package').on(table.runId, table.packageId),
+  foreignKey({ columns: [table.runId, table.custodyId], foreignColumns: [custodySubmissions.runId, custodySubmissions.custodyId] }),
 ]);
 
 export const submissionAttempts = sqliteTable('submission_attempts', {
@@ -92,7 +93,30 @@ export const paymentEvents = sqliteTable('payment_events', {
   paymentId: text('payment_id').notNull(), eventType: text('event_type').notNull(), receivedAt: text('received_at').notNull(),
 }, (table) => [primaryKey({ columns: [table.runId, table.providerEventId] })]);
 
+export const paymentAttempts = sqliteTable('payment_attempts', {
+  runId: text('run_id').notNull(), idempotencyKey: text('idempotency_key').notNull(),
+  paymentId: text('payment_id').notNull(), outcome: text('outcome').notNull(), attemptedAt: text('attempted_at').notNull(),
+}, (table) => [primaryKey({ columns: [table.runId, table.idempotencyKey] })]);
+
+export const processingJobs = sqliteTable('processing_jobs', {
+  runId: text('run_id').notNull(), jobId: text('job_id').notNull(), custodyId: text('custody_id').notNull(),
+  state: text('state').notNull(), attemptCount: integer('attempt_count').notNull().default(0),
+  availableAt: text('available_at').notNull(), lockedAt: text('locked_at'), lastErrorCode: text('last_error_code'),
+}, (table) => [
+  primaryKey({ columns: [table.runId, table.jobId] }),
+  uniqueIndex('uniq_processing_custody').on(table.runId, table.custodyId),
+  index('idx_jobs_state').on(table.runId, table.state, table.availableAt),
+]);
+
 export const caseEvents = sqliteTable('case_events', {
   runId: text('run_id').notNull(), caseId: text('case_id').notNull(), seq: integer('seq').notNull(),
   eventType: text('event_type').notNull(), actor: text('actor').notNull(), detail: text('detail').notNull(), occurredAt: text('occurred_at').notNull(),
 }, (table) => [primaryKey({ columns: [table.runId, table.caseId, table.seq] }), index('idx_events_case').on(table.runId, table.caseId, table.seq)]);
+
+export const faultInjections = sqliteTable('fault_injections', {
+  runId: text('run_id').notNull(), flag: text('flag').notNull(), remaining: integer('remaining').notNull(),
+}, (table) => [primaryKey({ columns: [table.runId, table.flag] })]);
+
+export const rateLimits = sqliteTable('rate_limits', {
+  keyHash: text('key_hash').primaryKey(), windowStart: text('window_start').notNull(), requestCount: integer('request_count').notNull(),
+});
