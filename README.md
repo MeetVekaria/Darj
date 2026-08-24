@@ -1,0 +1,68 @@
+# DARJ / दर्ज
+
+DARJ is an independent, browser-based filing-reliability prototype for one fully synthetic AOC-4 journey. It demonstrates local-first draft recovery, deterministic Jaanch checks, an immutable Mohar package, a package-bound synthetic signature, retry-safe custody submission, an immutable Rasid, payment reconciliation, and delayed asynchronous processing.
+
+> **Independent prototype · synthetic data · not an MCA service.** DARJ does not contact MCA21 or any other live government system. Nothing in the product is a real statutory filing, legal advice, MCA acknowledgement, Digital Signature Certificate, or payment.
+
+## Demo credentials
+
+- Email: `priya@darj.demo`
+- Password: `darj2026`
+
+Every successful login creates a session-scoped demo run. The shared credentials do not create shared filing state.
+
+## Run locally
+
+```bash
+npm install
+npm run dev
+```
+
+The app uses project-local Cloudflare D1 and R2 bindings supplied by the Sites development runtime.
+
+## Quality checks
+
+```bash
+npm run typecheck
+npm run lint
+npm test
+npm run build
+```
+
+## Implemented Round 1 surface
+
+- Isolated 24-hour synthetic demo runs and deterministic reset.
+- IndexedDB-first draft snapshots with separate local-save and server-sync states.
+- D1-backed immutable server draft versions with base-version conflict responses.
+- Three seeded synthetic PDFs stored in R2, with authoritative byte count, MIME and SHA-256 metadata.
+- 43 versioned deterministic Jaanch results and exact-field navigation.
+- Canonical package construction using RFC 8785 semantics and SHA-256 hashing.
+- Append-only sealed package and package-hash-bound synthetic signing adapter.
+- D1-batched custody, receipt, payment-intent and idempotency records.
+- Same-key replay, same-package replay and different-fingerprint rejection.
+- Intentional post-commit submission response loss with safe replay to the same Rasid.
+- Intentional payment callback loss with server reconciliation and no second payment request.
+- Separately recorded `RECEIVED`, `PAID`, `PROCESSING DELAYED`, `PROCESSING`, and `ACCEPTED` events.
+- Responsive filing register, prepare, Jaanch, Mohar, sign, Rasid, payment, processing, evidence, limitations and recovery views.
+- Print-safe A4 Rasid and persistent prototype disclosure.
+
+## Deliberate deployment adaptation
+
+The source specification described Next.js, Fastify, PostgreSQL and S3-compatible storage as separate applications. This deployable Round 1 build preserves the transaction boundaries in one Sites/Vinext application using Cloudflare D1 and R2. D1 `batch()` and unique constraints provide the atomic prototype custody boundary; no claim is made that this is a production MCA integration or production DSC/payment stack.
+
+P1 resumable TUS uploads, master-data drift and correction lineage remain disabled and are not rendered. This follows the specification’s rule that an enhancement must stay hidden until its acceptance behavior passes.
+
+## Data and security boundary
+
+- Only synthetic handles and tiny generated PDF fixtures are seeded.
+- Aadhaar-like, PAN-like and valid-looking CIN patterns are rejected on draft sync.
+- Uploads are scoped under `demo/{demoRunId}/{caseId}/...` and the server ignores client ownership metadata.
+- Session cookies are HTTP-only and same-site; hosted HTTPS requests add the secure flag.
+- No runtime server request targets a `.gov.in` host. Evidence links are user-clicked links only.
+- Critical failures use structured `DARJ_*` errors with stage, retry safety and a correlation ID.
+
+## Libraries and starter disclosure
+
+The project was scaffolded with `@openai/create-sites@0.2.0`. Primary runtime libraries are React 19, Next 16, Vinext, Vite, the OpenAI Sites Vite plugin, Cloudflare Workers/D1/R2, and Drizzle ORM. `tsx` runs the small Node invariant suite. Exact versions and transitive packages are pinned in `package-lock.json`.
+
+See [Architecture](docs/ARCHITECTURE.md), [Threat model](docs/THREAT_MODEL.md), [implementation status](docs/IMPLEMENTATION_STATUS.md), and the [Codex build log](docs/CODEX_BUILD_LOG.md).
