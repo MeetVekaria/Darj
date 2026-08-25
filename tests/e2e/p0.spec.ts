@@ -156,7 +156,7 @@ test('P0 upload verifies stored PDF and edit after signing creates v24', async (
   await login(page); await openPrepare(page);
   const boardRow = page.locator('.attachment-row').filter({ hasText: 'Board report' });
   await boardRow.locator('input[type=file]').setInputFiles({ name: 'DARJ-replacement-board-report.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4\n% DARJ demo replacement\n%%EOF') });
-  await expect(page.getByText(/server MIME, bytes, and SHA-256 verified/i)).toBeVisible();
+  await expect(page.getByText(/TUS complete.*MIME, bytes and SHA-256 verified/i)).toBeVisible();
   await fixAndCheck(page); await sealAndSign(page);
   await page.getByRole('button', { name: /Edit as new version/i }).click();
   await page.getByLabel('Revenue (₹)').fill('124800001');

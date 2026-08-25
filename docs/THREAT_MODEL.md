@@ -26,7 +26,7 @@
 | Package mutation | Canonical package/hash are append-only; WebCrypto Ed25519 verifies the exact signed hash before custody |
 | Silent draft overwrite | Base-version comparison and immutable draft rows |
 | Real sensitive data entered | Server rejects Aadhaar-like, PAN-like and valid-looking CIN patterns |
-| Malicious file | 5 MB limit; demo filename; PDF MIME/extension/header/EOF checks; client/server hash match; stored-byte re-verification; no trusted HTML renderer |
+| Malicious file | 12 MB limit; authenticated TUS session; demo filename; PDF MIME/extension/header/EOF checks; expected byte count; client/server hash match; stored R2 byte re-verification; no trusted HTML renderer |
 | Cross-site mutation | Same-origin enforcement, double-submit CSRF token and SameSite Strict cookies |
 | Login/control abuse | D1-backed hashed rate-limit keys and isolated run-scoped controls |
 | UI embedding/content injection | CSP, `frame-ancestors 'none'`, X-Frame-Options DENY and no user HTML rendering |

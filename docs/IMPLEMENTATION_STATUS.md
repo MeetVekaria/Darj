@@ -2,7 +2,7 @@
 
 Status reflects the deployed code path, not the existence of a visual control.
 
-**Release gate:** every P0 implementation and test requirement below is complete in the current source. The active production URL is maintained by the Sites project rather than hard-coded in this file.
+**Release gate:** every P0 and P1 implementation and test requirement below is complete in the current source. The active production URL is maintained by the Sites project rather than hard-coded in this file.
 
 ## P0
 
@@ -30,10 +30,10 @@ Status reflects the deployed code path, not the existence of a visual control.
 
 | Flag | Status | Product behavior |
 |---|---|---|
-| `FEATURE_RESUMABLE_UPLOADS` | Disabled | No resumable-upload claim or control rendered |
-| `FEATURE_MASTER_DRIFT` | Disabled | No master-drift control rendered |
-| `FEATURE_CORRECTION_LINEAGE` | Disabled | No correction-lineage claim or route rendered |
-| `FEATURE_RECOVERY_CASE` | Enabled for P0 recovery only | Shows implemented retry, callback, queue and local-draft recovery |
+| `FEATURE_RESUMABLE_UPLOADS` | Complete, enabled | Maintained TUS client/server protocol, R2 multipart parts, IndexedDB URL/fingerprint and authoritative D1 offset; reload resumes at 6 MB in the acceptance test |
+| `FEATURE_MASTER_DRIFT` | Complete, enabled | Old/new/source/time comparison blocks Mohar until explicit accept or stop; acceptance creates a new draft and reruns Jaanch |
+| `FEATURE_CORRECTION_LINEAGE` | Complete, enabled | Board-report return creates linked v24, preserves v23 payload/hash, highlights one changed path and supports a new sign/submit boundary |
+| `FEATURE_RECOVERY_CASE` | Complete, enabled | Recovery register and controls cover upload pause, callback loss, master drift, processor pause and lineage |
 
 ## Invariants checked in this build
 
@@ -48,11 +48,16 @@ Status reflects the deployed code path, not the existence of a visual control.
 - `RECEIVED`, `PAID`, `PROCESSING DELAYED`, `PROCESSING` and `ACCEPTED` remain distinct ordered events.
 - Ed25519 verification fails after package-hash tampering.
 - Missing CSRF is rejected without changing the draft.
+- A 7 MB PDF pauses after a server-confirmed 6 MB R2 multipart part, survives reload and completes from that offset.
+- Company master drift returns `DARJ_JAANCH_FAILED` on an attempted seal until Meet reviews it.
+- Correction child v24 points to immutable v23, changes only `attachments.boardReport`, and receives its own Rasid.
+- Desktop paired fields have zero top/height delta; mobile inputs share one width with zero horizontal overflow.
+- Sign out clears both session cookies while retaining the IndexedDB draft.
 
 ## Verification snapshot, 25 August 2026
 
 - TypeScript strict check: pass.
 - ESLint: pass.
 - Node invariant/security suite: 8 passed.
-- Playwright P0 matrix: 11 passed, 9 intentional cross-project skips.
+- Playwright P0/P1 desktop and 360 px matrix: 17 passed, 15 intentional cross-project skips.
 - Production Vinext build: pass.

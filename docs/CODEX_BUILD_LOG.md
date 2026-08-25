@@ -65,3 +65,19 @@
 
 - TypeScript strict check, ESLint, eight Node invariant/security tests and the production Vinext build pass.
 - Playwright P0 matrix: 11 passed and 9 intentional cross-project skips, including the primary journey, recovery, security, accessibility and mobile overflow coverage.
+
+### P1 completion, sign out and alignment audit
+
+- Added TUS 1.0 resumable uploads with the maintained `tus-js-client` and `@tus/server` packages. R2 multipart uploads store 6 MB parts while D1 records the authoritative offset, fingerprint, expected bytes, part metadata and lifecycle state; the client stores the matching URL and fingerprint in IndexedDB.
+- Added deterministic upload pause, reload and same-file resume, plus server-side final MIME, byte-count and SHA-256 verification before any attachment becomes complete.
+- Added company master snapshot state and an explicit old/new/source/detected-time review. Sealing remains blocked until Meet accepts snapshot 8 or keeps the pinned value and stops.
+- Added board-report correction requests, immutable package lineage and a linked v23 to v24 correction with its own signature and resubmission receipt.
+- Expanded the recovery register and authenticated controls to cover every enabled P1 path.
+- Added sign out to the authenticated header and footer. Session cookies are removed while the local recoverable draft remains.
+- Standardised every field as label, two-line helper region and equal-height input. Desktop bounding-box checks now report zero top and height difference for all paired rows; mobile uses one equal-width column without overflow.
+
+### P1 verification
+
+- Generated and inspected additive Drizzle migration `0002_cynical_cannonball.sql`.
+- TypeScript strict check, ESLint, eight Node invariant/security tests and the production Vinext build pass.
+- Playwright desktop and 360 px matrix: 17 passed and 15 intentional cross-project skips, including real 7 MB pause/resume, master-data seal blocking, correction lineage/resubmission, sign-out cookie boundaries, desktop alignment and mobile control-width coverage.

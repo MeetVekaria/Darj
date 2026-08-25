@@ -6,7 +6,7 @@
 Browser
   React client state + IndexedDB snapshots + persisted idempotency key
      │
-     │ same-origin JSON / multipart API
+     │ same-origin JSON / TUS API
      ▼
 Vinext route handler
   demo-run authorization · deterministic rules · canonical hashing
@@ -42,9 +42,9 @@ Custody, payment and processing are separate records/events. The UI derives a jo
 
 ## Persistence
 
-- D1: demo runs, immutable draft snapshots, attachment metadata, packages, signatures, custody snapshots, receipts, submission/payment attempts, payment intents/events, durable processing jobs, ordered case events, rate limits and one-shot fault controls.
-- R2: demo PDF bytes. D1 stores authoritative metadata and ownership scope.
-- IndexedDB: the device-local recovery copy and persisted submission idempotency key. It is intentionally not the authority for custody, payment or processing.
+- D1: demo runs, immutable draft snapshots, attachment and TUS upload-session metadata, master snapshots, packages, package lineage, correction requests, signatures, custody snapshots, receipts, submission/payment attempts, payment intents/events, durable processing jobs, ordered case events, rate limits and one-shot fault controls.
+- R2: completed demo PDF bytes and in-progress multipart parts. D1 stores authoritative ownership, offsets and verification metadata.
+- IndexedDB: the device-local recovery copy, TUS URL/fingerprint/selected-file metadata and persisted submission idempotency keys. It is intentionally not the authority for upload offset, custody, payment or processing.
 
 ## Request security
 
@@ -54,4 +54,4 @@ Custody, payment and processing are separate records/events. The UI derives a jo
 
 ## Feature gating
 
-P0 is active. P1 resumable upload, master drift and correction lineage are omitted rather than partially exposed. They can be added behind independent flags after their invariant tests pass.
+P0 and all four P1 capabilities are active. Resumable uploads use the maintained TUS protocol implementation with R2 multipart objects and D1 upload sessions. Master snapshots, correction requests and parent/child package lineage live in additive tables so any P1 flag can be disabled without a migration rollback or a broken P0 route.

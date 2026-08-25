@@ -1,9 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import * as tus from 'tus-js-client';
 import { localDelete, localGet, localPut, localStorageAvailable } from '@/lib/local-db';
 
-type Screen = 'login' | 'filings' | 'prepare' | 'jaanch' | 'mohar' | 'sign' | 'rasid' | 'status' | 'recovery' | 'evidence' | 'limitations' | 'demoControls';
+type Screen = 'login' | 'filings' | 'prepare' | 'jaanch' | 'mohar' | 'sign' | 'rasid' | 'status' | 'recovery' | 'lineage' | 'evidence' | 'limitations' | 'demoControls';
 type FormShape = {
   registeredOffice: string;
   financialYear: string;
@@ -20,6 +21,12 @@ type SignatureRecord = { signatureId: string; packageId: string; provider: strin
 type ReceiptRecord = { receiptId: string; custodyId: string; packageId: string; packageHash: string; receivedAt: string; replayed?: boolean };
 type PaymentRecord = { paymentId: string; state: string; amountPaise: number; reconciliationReference: string; updatedAt: string };
 type EventRecord = { seq: number; eventType: string; actor: string; detail: string; occurredAt: string };
+type UploadSession = { uploadId: string; slot: string; filename: string; expectedBytes: number; confirmedOffset: number; clientSha256: string; fingerprint: string; state: string; updatedAt: string; expiresAt: string; uploadUrl: string };
+type MasterState = { pinnedVersion: number; pinnedOffice: string; currentVersion: number; currentOffice: string; source: string; reviewState: string; detectedAt: string | null; reviewedAt: string | null };
+type CorrectionState = { requestId: string; sourcePackageId: string; documentSlot: string; summary: string; state: string; childPackageId: string | null; createdAt: string; resolvedAt: string | null };
+type LineageRecord = { parent: PackageRecord; child: PackageRecord; reason: string; changedPaths: string[]; createdAt: string };
+type FeatureFlags = { resumableUploads: boolean; masterDrift: boolean; correctionLineage: boolean; recoveryCase: boolean };
+type UploadProgress = { filename: string; offset: number; total: number; state: 'HASHING' | 'UPLOADING' | 'PAUSED' | 'ERROR' };
 type CheckRecord = {
   code: string; stage: string; fieldPath: string | null; documentSlot: string | null;
   blocking: boolean; retryable: boolean; status: string; summary: string; detail: string;
@@ -33,6 +40,8 @@ type AppState = {
   receipt: ReceiptRecord | null; payment: PaymentRecord | null;
   processingJob: { jobId: string; state: string; attemptCount: number } | null;
   processorPaused: boolean; events: EventRecord[];
+  uploadPauseArmed: boolean; uploadSessions: UploadSession[]; master: MasterState | null;
+  correction: CorrectionState | null; lineage: LineageRecord[]; features: FeatureFlags;
 };
 type DarjError = {
   code: string; stage: string; summary: string; detail: string; retryable: boolean; correlationId: string;
@@ -60,7 +69,9 @@ export default function DarjApp() {
   const [hasLocalRecovery, setHasLocalRecovery] = useState(false);
   const [restoredLocalNeedsSync, setRestoredLocalNeedsSync] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<Record<string, UploadProgress>>({});
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeUploads = useRef(new Map<string, tus.Upload>());
 
   useEffect(() => {
     queueMicrotask(() => {
@@ -292,7 +303,7 @@ export default function DarjApp() {
     if (!online) return;
     setBusy('submit');
     setNotice('Submitting with a persisted retry key…');
-    const idempotencyKey = await getOrCreateIdempotencyKey(state?.caseId ?? 'case');
+    const idempotencyKey = await getOrCreateIdempotencyKey(`${state?.caseId ?? 'case'}:${state?.package?.packageId ?? 'package'}`);
     try {
       let receipt: ReceiptRecord;
       try {
@@ -315,7 +326,7 @@ export default function DarjApp() {
     if (!online) return;
     setBusy('payment');
     setNotice('Approving demo payment…');
-    const idempotencyKey = await getOrCreateIdempotencyKey(`payment:${state?.caseId ?? 'case'}`);
+    const idempotencyKey = await getOrCreateIdempotencyKey(`payment:${state?.caseId ?? 'case'}:${state?.payment?.paymentId ?? 'payment'}`);
     try {
       try {
         await post('approvePayment', { idempotencyKey });
@@ -367,31 +378,165 @@ export default function DarjApp() {
     } finally { setBusy(''); }
   }
 
+  async function signOut() {
+    setBusy('logout');
+    try {
+      for (const upload of activeUploads.current.values()) await upload.abort();
+      activeUploads.current.clear();
+      await post('logout');
+      setState(null); setForm(null); setChecks([]); setConflict(null); setSessionExpired(false);
+      setScreen('login');
+      window.history.pushState({}, '', '/login');
+      window.scrollTo({ top: 0 });
+    } finally { setBusy(''); }
+  }
+
+  async function reviewMaster(choice: 'accept' | 'keep') {
+    setBusy('master');
+    try {
+      const next = await post(choice === 'accept' ? 'acceptMaster' : 'keepPinnedMaster') as unknown as AppState;
+      setState(next);
+      if (next.draft) {
+        setForm(next.draft.form);
+        await writeLocalDraft(next.caseId, next.runId, next.draft.version, next.draft.form);
+      }
+      setChecks([]);
+      setNotice(choice === 'accept' ? `Reviewed and pinned master snapshot ${next.master?.pinnedVersion}. Run Jaanch again.` : 'Pinned address kept. This filing is stopped and cannot be sealed.');
+    } finally { setBusy(''); }
+  }
+
+  async function runControl(flag: string) {
+    setBusy(`control:${flag}`);
+    try {
+      await post('setRecovery', { flag });
+      const next = await refresh();
+      if (next?.draft) setForm(next.draft.form);
+      const messages: Record<string, string> = {
+        upload_pause: 'Resumable upload will pause after the next server-confirmed chunk.',
+        master_drift: 'Demo company master changed. Sealing is blocked until Meet reviews the old and current addresses.',
+        correction_request: 'Board report resubmission is now required. The original package remains unchanged.',
+      };
+      setNotice(messages[flag] ?? `${flag.replaceAll('_', ' ')} armed for this demo run`);
+    } finally { setBusy(''); }
+  }
+
+  async function createCorrection() {
+    setBusy('correction');
+    try {
+      const next = await post('createCorrection') as unknown as AppState;
+      setState(next);
+      if (next.draft) {
+        setForm(next.draft.form);
+        await writeLocalDraft(next.caseId, next.runId, next.draft.version, next.draft.form);
+      }
+      setChecks([]);
+      navigate('lineage');
+      setNotice('Corrected v24 created from v23. The original package remains immutable and linked.');
+    } finally { setBusy(''); }
+  }
+
   async function uploadAttachment(slot: string, file: File) {
     if (!online || !state) return;
     setBusy(`upload:${slot}`);
     setNotice('Hashing the selected demo PDF before upload…');
     try {
+      if (!/^DARJ-[A-Za-z0-9._ -]+\.pdf$/u.test(file.name) || file.type !== 'application/pdf') throw new Error('Only demo PDF files with names starting DARJ are accepted.');
+      if (file.size > 12 * 1024 * 1024) throw new Error('This file exceeds DARJ’s 12 MB demo limit.');
+      setUploadProgress((current) => ({ ...current, [slot]: { filename: file.name, offset: 0, total: file.size, state: 'HASHING' } }));
       const bytes = new Uint8Array(await file.arrayBuffer());
       const digest = await crypto.subtle.digest('SHA-256', bytes);
       const clientSha256 = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
-      const body = new FormData();
-      body.set('slot', slot); body.set('file', file); body.set('clientSha256', clientSha256);
-      const response = await fetch(API, { method: 'POST', headers: { 'X-DARJ-CSRF': readBrowserCookie('darj_csrf') ?? '' }, body });
-      const payload = await response.json() as Attachment & { error?: DarjError };
-      if (!response.ok) {
-        if (payload.error) setError(payload.error);
-        throw new Error(payload.error?.summary ?? 'Attachment upload failed');
+      const existingAttachment = state.attachments.find((item) => item.slot === slot && item.sha256 === clientSha256 && item.bytes === file.size);
+      if (existingAttachment) {
+        setUploadProgress((current) => { const next = { ...current }; delete next[slot]; return next; });
+        setNotice(`${labelSlot(slot)} already has these server-verified bytes. No duplicate was created.`);
+        return;
       }
-      setState((current) => current ? {
-        ...current,
-        attachments: [...current.attachments.filter((item) => item.slot !== slot), payload].sort((a, b) => a.slot.localeCompare(b.slot)),
-        packageCurrent: false,
-        signatureValid: false,
-      } : current);
-      setNotice(`${labelSlot(slot)} · server MIME, bytes, and SHA-256 verified`);
-      setError(null);
+      if (!state.features.resumableUploads) {
+        const body = new FormData();
+        body.set('slot', slot); body.set('file', file); body.set('clientSha256', clientSha256);
+        const response = await fetch(API, { method: 'POST', headers: { 'X-DARJ-CSRF': readBrowserCookie('darj_csrf') ?? '' }, body });
+        const payload = await response.json() as Attachment & { error?: DarjError };
+        if (!response.ok) throw new Error(payload.error?.summary ?? 'Attachment upload failed.');
+        const next = await refresh();
+        if (next) setState(next);
+        setUploadProgress((current) => { const nextProgress = { ...current }; delete nextProgress[slot]; return nextProgress; });
+        setNotice(`${labelSlot(slot)} · server MIME, bytes and SHA-256 verified`);
+        return;
+      }
+      const fingerprint = `darj:${state.runId}:${state.caseId}:${slot}:${file.name}:${file.size}:${clientSha256}`;
+      const serverSession = state.uploadSessions.find((session) => session.slot === slot && session.fingerprint === fingerprint && session.state === 'UPLOADING');
+      const initialOffset = serverSession?.confirmedOffset ?? 0;
+      setUploadProgress((current) => ({ ...current, [slot]: { filename: file.name, offset: initialOffset, total: file.size, state: 'UPLOADING' } }));
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const finish = (callback: () => void) => { if (!settled) { settled = true; callback(); } };
+        const upload = new tus.Upload(file, {
+          endpoint: '/api/darj/uploads',
+          uploadUrl: serverSession?.uploadUrl ?? null,
+          chunkSize: 6 * 1024 * 1024,
+          retryDelays: [0, 750, 2_000],
+          headers: { 'X-DARJ-CSRF': readBrowserCookie('darj_csrf') ?? '' },
+          metadata: { slot, filename: file.name, filetype: file.type, sha256: clientSha256, fingerprint },
+          fingerprint: async () => fingerprint,
+          urlStorage: new IndexedDbTusUrlStorage(),
+          storeFingerprintForResuming: true,
+          removeFingerprintOnSuccess: true,
+          onUploadUrlAvailable: () => {
+            void localPut(`upload:${state.runId}:${slot}`, { fingerprint, uploadUrl: upload.url, filename: file.name, expectedBytes: file.size, confirmedOffset: initialOffset, clientSha256 });
+          },
+          onChunkComplete: (_chunkSize, bytesAccepted, bytesTotal) => {
+            setUploadProgress((current) => ({ ...current, [slot]: { filename: file.name, offset: bytesAccepted, total: bytesTotal, state: 'UPLOADING' } }));
+            void localPut(`upload:${state.runId}:${slot}`, { fingerprint, uploadUrl: upload.url, filename: file.name, expectedBytes: bytesTotal, confirmedOffset: bytesAccepted, clientSha256 });
+            if (state.uploadPauseArmed && bytesAccepted < bytesTotal) {
+              void upload.abort().then(async () => {
+                activeUploads.current.delete(slot);
+                setUploadProgress((current) => ({ ...current, [slot]: { filename: file.name, offset: bytesAccepted, total: bytesTotal, state: 'PAUSED' } }));
+                await post('consumeUploadPause');
+                await refresh();
+                setNotice(`Upload paused · ${formatBytes(bytesAccepted)} of ${formatBytes(bytesTotal)} safely stored`);
+                finish(resolve);
+              });
+            }
+          },
+          onSuccess: () => {
+            void (async () => {
+              activeUploads.current.delete(slot);
+              await localDelete(`upload:${state.runId}:${slot}`);
+              const next = await refresh();
+              if (next) setState(next);
+              setUploadProgress((current) => { const nextProgress = { ...current }; delete nextProgress[slot]; return nextProgress; });
+              setNotice(`${labelSlot(slot)} · TUS complete · durable R2 object, MIME, bytes and SHA-256 verified`);
+              setError(null);
+              finish(resolve);
+            })();
+          },
+          onError: (caught) => {
+            activeUploads.current.delete(slot);
+            setUploadProgress((current) => ({ ...current, [slot]: { filename: file.name, offset: current[slot]?.offset ?? initialOffset, total: file.size, state: 'ERROR' } }));
+            setError({ code: 'DARJ_ATTACHMENT_UPLOAD_INCOMPLETE', stage: 'UPLOAD', summary: 'The resumable upload is paused.', detail: 'Select the same file to resume from the server-confirmed offset. Completed chunks will not be sent again.', retryable: true, correlationId: 'DARJ-CORR-UPLOAD' });
+            finish(() => reject(caught));
+          },
+        });
+        activeUploads.current.set(slot, upload);
+        upload.start();
+      });
+    } catch (caught) {
+      if (!(caught instanceof Error && caught.message.includes('resumable upload is paused'))) {
+        const summary = caught instanceof Error ? caught.message : 'Attachment upload failed.';
+        setError((current) => current?.stage === 'UPLOAD' ? current : { code: 'DARJ_ATTACHMENT_UPLOAD_INCOMPLETE', stage: 'UPLOAD', summary, detail: 'No completed attachment was changed.', retryable: true, correlationId: 'DARJ-CORR-UPLOAD' });
+      }
     } finally { setBusy(''); }
+  }
+
+  async function pauseUpload(slot: string) {
+    const upload = activeUploads.current.get(slot);
+    if (!upload) return;
+    await upload.abort();
+    activeUploads.current.delete(slot);
+    setUploadProgress((current) => current[slot] ? { ...current, [slot]: { ...current[slot], state: 'PAUSED' } } : current);
+    const progress = uploadProgress[slot];
+    setNotice(progress ? `Upload paused · ${formatBytes(progress.offset)} of ${formatBytes(progress.total)} safely stored` : 'Upload paused at the last server-confirmed offset.');
   }
 
   function exportDraft() {
@@ -452,7 +597,7 @@ export default function DarjApp() {
 
   const blocking = checks.filter((check) => check.blocking);
   const passed = checks.filter((check) => !check.blocking);
-  const accepted = state?.events.some((event) => event.eventType === 'ACCEPTED') ?? false;
+  const accepted = state?.processingJob?.state === 'ACCEPTED';
 
   if (screen === 'evidence' || screen === 'limitations') return <PublicInformationScreen screen={screen} onNavigate={navigate} />;
   if (screen === 'login' || !state || !form) return <LoginScreen hydrated={hydrated} busy={busy === 'login'} onEnter={() => void login()} onLimitations={() => navigate('limitations')} error={error} sessionExpired={sessionExpired} hasLocalRecovery={hasLocalRecovery} storageReady={storageReady} />;
@@ -460,7 +605,7 @@ export default function DarjApp() {
   return (
     <div className="app-shell">
       <Disclosure onOpen={() => navigate('limitations')} />
-      <AppHeader screen={screen} state={state} onNavigate={navigate} />
+      <AppHeader screen={screen} state={state} onNavigate={navigate} onSignOut={() => void signOut()} signingOut={busy === 'logout'} />
       <main id="main-content" className="app-main">
         {notice && <div className="notice" role="status" aria-live="polite"><span className="status-mark progress" />{notice}</div>}
         {error && <ErrorPanel error={error} />}
@@ -469,11 +614,12 @@ export default function DarjApp() {
         {screen === 'prepare' && (
           <PrepareScreen state={state} form={form} saveState={saveState} busy={busy} online={online} storageReady={storageReady} conflict={conflict}
             onChange={changeField} onJaanch={() => void runChecks()} onResolveConflict={(choice) => void resolveConflict(choice)}
-            onUpload={(slot, file) => void uploadAttachment(slot, file)} onExport={exportDraft} onImport={(file) => void importDraft(file)} onFieldFocus={rememberFocusedField} />
+            uploadProgress={uploadProgress} onUpload={(slot, file) => void uploadAttachment(slot, file)} onPauseUpload={(slot) => void pauseUpload(slot)}
+            onMasterReview={(choice) => void reviewMaster(choice)} onExport={exportDraft} onImport={(file) => void importDraft(file)} onFieldFocus={rememberFocusedField} />
         )}
         {screen === 'jaanch' && (
-          <JaanchScreen checks={checks} blocking={blocking} passed={passed} busy={busy} onGoToField={() => {
-            navigate('prepare'); setTimeout(() => document.getElementById('field-boardMeetings')?.focus(), 80);
+          <JaanchScreen checks={checks} blocking={blocking} passed={passed} busy={busy} onGoToField={(fieldPath) => {
+            navigate('prepare'); setTimeout(() => document.getElementById(fieldPath === 'registeredOffice' ? 'field-office' : 'field-boardMeetings')?.focus(), 80);
           }} onRerun={() => void runChecks()} onSeal={() => void createMohar()} online={online} />
         )}
         {screen === 'mohar' && <MoharScreen state={state} busy={busy} online={online} onSign={() => void sign()} />}
@@ -481,11 +627,12 @@ export default function DarjApp() {
         {screen === 'rasid' && <RasidScreen state={state} busy={busy} online={online} onPay={() => void approvePayment()} onStatus={() => navigate('status')} />}
         {screen === 'status' && <StatusScreen state={state} accepted={accepted} busy={busy} online={online} onPause={() => void pauseProcessor()} onResume={() => void resumeProcessor()} />}
         {screen === 'recovery' && <RecoveryScreen state={state} onOpenMain={() => navigate('prepare')} />}
-        {screen === 'demoControls' && <DemoControlsScreen state={state} busy={busy} onControl={(flag) => void post('setRecovery', { flag }).then(() => setNotice(`${flag.replaceAll('_', ' ')} armed for this demo run`))} onPause={() => void pauseProcessor()} onResume={() => void resumeProcessor()} onReset={() => void resetDemo()} />}
+        {screen === 'lineage' && (state.features.correctionLineage ? <LineageScreen state={state} busy={busy} onCreate={() => void createCorrection()} onSign={() => { if (state.package?.packageId === state.correction?.childPackageId) navigate('mohar'); }} /> : <FilingsScreen state={state} onPrepare={() => navigate(resumeScreen(state))} onRecovery={() => navigate('recovery')} />)}
+        {screen === 'demoControls' && <DemoControlsScreen state={state} busy={busy} onControl={(flag) => void runControl(flag)} onPause={() => void pauseProcessor()} onResume={() => void resumeProcessor()} onReset={() => void resetDemo()} onLineage={() => navigate('lineage')} />}
       </main>
       <footer className="app-footer">
         <span>DARJ / दर्ज. Independent MCA21 filing prototype.</span>
-        <nav aria-label="Footer"><button onClick={() => navigate('evidence')}>Evidence</button><button onClick={() => navigate('limitations')}>Limitations</button><button onClick={() => void resetDemo()} disabled={busy === 'reset'}>Reset this demo run</button></nav>
+        <nav aria-label="Footer"><button onClick={() => navigate('evidence')}>Evidence</button><button onClick={() => navigate('limitations')}>Limitations</button>{state.features.correctionLineage && <button onClick={() => navigate('lineage')}>Package lineage</button>}<button onClick={() => void resetDemo()} disabled={busy === 'reset'}>Reset this demo run</button><button onClick={() => void signOut()} disabled={busy === 'logout'}>Sign out</button></nav>
       </footer>
     </div>
   );
@@ -556,13 +703,13 @@ function LoginScreen({ hydrated, busy, onEnter, onLimitations, error, sessionExp
   );
 }
 
-function AppHeader({ screen, state, onNavigate }: { screen: Screen; state: AppState; onNavigate: (screen: Screen) => void }) {
+function AppHeader({ screen, state, onNavigate, onSignOut, signingOut }: { screen: Screen; state: AppState; onNavigate: (screen: Screen) => void; onSignOut: () => void; signingOut: boolean }) {
   return (
     <header className="app-header">
       <button className="brand-button" onClick={() => onNavigate('filings')} aria-label="DARJ filing register"><Wordmark compact /></button>
       <div className="header-context"><span className="mono">FOLIO 01</span><strong>Aster Components Private Limited</strong><span>MCA21 AOC-4 demo. FY 2025-26</span></div>
       <div className="header-state"><span className="status-mark durable" /><div><small>Current record</small><strong>{journeyLabel(state)}</strong></div></div>
-      {screen !== 'filings' && <button className="text-button" onClick={() => onNavigate('filings')}>Filing register</button>}
+      <div className="header-actions">{screen !== 'filings' && <button className="text-button filing-register-link" onClick={() => onNavigate('filings')}>Filing register</button>}<button className="text-button signout-button" onClick={onSignOut} disabled={signingOut}>{signingOut ? 'Signing out…' : 'Sign out'}</button></div>
     </header>
   );
 }
@@ -599,10 +746,12 @@ function FilingsScreen({ state, onPrepare, onRecovery }: { state: AppState; onPr
   );
 }
 
-function PrepareScreen({ state, form, saveState, busy, online, storageReady, conflict, onChange, onJaanch, onResolveConflict, onUpload, onExport, onImport, onFieldFocus }: {
+function PrepareScreen({ state, form, saveState, busy, online, storageReady, conflict, uploadProgress, onChange, onJaanch, onResolveConflict, onUpload, onPauseUpload, onMasterReview, onExport, onImport, onFieldFocus }: {
   state: AppState; form: FormShape; saveState: string; busy: string; online: boolean; storageReady: boolean; conflict: DraftConflict | null;
+  uploadProgress: Record<string, UploadProgress>;
   onChange: (field: keyof FormShape, value: string) => void; onJaanch: () => void; onResolveConflict: (choice: 'local' | 'server') => void;
-  onUpload: (slot: string, file: File) => void; onExport: () => void; onImport: (file: File) => void; onFieldFocus: (fieldId: string) => void;
+  onUpload: (slot: string, file: File) => void; onPauseUpload: (slot: string) => void; onMasterReview: (choice: 'accept' | 'keep') => void;
+  onExport: () => void; onImport: (file: File) => void; onFieldFocus: (fieldId: string) => void;
 }) {
   return (
     <section className="prepare-grid" aria-labelledby="prepare-title">
@@ -614,15 +763,16 @@ function PrepareScreen({ state, form, saveState, busy, online, storageReady, con
         {!storageReady && <div className="error-panel" role="alert"><strong>Local storage unavailable. Edits blocked.</strong><p>DARJ cannot promise recovery, so it will not accept additional edits. Export the current demo draft before changing browser storage settings.</p><button className="secondary" onClick={onExport}>Export recovery JSON</button></div>}
         {conflict && <ConflictPanel conflict={conflict} busy={busy === 'conflict'} onResolve={onResolveConflict} />}
         <form onSubmit={(event) => event.preventDefault()}>
-          <fieldset id="company" disabled={!storageReady}><legend><span>01</span> Company record</legend><div className="field full"><label htmlFor="field-office">Registered office</label><p id="office-help">Pinned from demo company master snapshot 7.</p><input id="field-office" value={form.registeredOffice} onFocus={() => onFieldFocus('field-office')} onChange={(e) => onChange('registeredOffice', e.target.value)} aria-describedby="office-help" /></div><div className="field"><label htmlFor="field-fy">Financial year</label><input id="field-fy" value={form.financialYear} onFocus={() => onFieldFocus('field-fy')} onChange={(e) => onChange('financialYear', e.target.value)} /></div><div className="field"><label htmlFor="field-agm">AGM date</label><input id="field-agm" type="date" value={form.agmDate} onFocus={() => onFieldFocus('field-agm')} onChange={(e) => onChange('agmDate', e.target.value)} /></div></fieldset>
-          <fieldset id="financials" disabled={!storageReady}><legend><span>02</span> Financial summary</legend><div className="field"><label htmlFor="field-revenue">Revenue (₹)</label><input id="field-revenue" inputMode="numeric" value={form.revenue} onFocus={() => onFieldFocus('field-revenue')} onChange={(e) => onChange('revenue', e.target.value)} /></div><div className="field"><label htmlFor="field-expenses">Expenses (₹)</label><input id="field-expenses" inputMode="numeric" value={form.expenses} onFocus={() => onFieldFocus('field-expenses')} onChange={(e) => onChange('expenses', e.target.value)} /></div><div className="field"><label htmlFor="field-profit">Net profit (₹)</label><input id="field-profit" inputMode="numeric" value={form.netProfit} onFocus={() => onFieldFocus('field-profit')} onChange={(e) => onChange('netProfit', e.target.value)} /></div></fieldset>
-          <fieldset id="governance" disabled={!storageReady}><legend><span>03</span> Governance</legend><div className="field"><label htmlFor="field-director">Director name</label><input id="field-director" value={form.directorName} onFocus={() => onFieldFocus('field-director')} onChange={(e) => onChange('directorName', e.target.value)} /></div><div className="field"><label htmlFor="field-boardMeetings">Board meetings</label><p id="meetings-help">Seeded with one deterministic issue for Jaanch.</p><input id="field-boardMeetings" inputMode="numeric" value={form.boardMeetings} onFocus={() => onFieldFocus('field-boardMeetings')} onChange={(e) => onChange('boardMeetings', e.target.value)} aria-describedby="meetings-help" /></div></fieldset>
-          <fieldset id="attachments"><legend><span>04</span> Verified attachments</legend><div className="attachment-list">{state.attachments.map((item) => <div className="attachment-row" key={item.slot}><span className="file-mark" aria-hidden="true">PDF</span><div><strong>{labelSlot(item.slot)}</strong><small>{item.filename} · {item.bytes} bytes</small></div><Status label="SERVER VERIFIED" tone="durable" /><code title={item.sha256}>{shortHash(item.sha256)}</code><label className={`secondary file-action ${!online ? 'disabled' : ''}`}>Replace<input type="file" accept="application/pdf,.pdf" disabled={!online || busy.startsWith('upload:')} onChange={(event) => { const file = event.target.files?.[0]; if (file) onUpload(item.slot, file); event.currentTarget.value = ''; }} /></label></div>)}</div><p className="attachment-help">P0 upload limit: 5 MB. Filename must start <code>DARJ-</code>. DARJ verifies the PDF signature, byte count, and SHA-256 from stored R2 bytes.</p></fieldset>
+          <fieldset id="company" disabled={!storageReady}><legend><span>01</span> Company record</legend><div className="field full"><label htmlFor="field-office">Registered office</label><p id="office-help">Pinned from demo company master snapshot {state.master?.pinnedVersion ?? 7}.</p><input id="field-office" value={form.registeredOffice} onFocus={() => onFieldFocus('field-office')} onChange={(e) => onChange('registeredOffice', e.target.value)} aria-describedby="office-help" /></div><div className="field"><label htmlFor="field-fy">Financial year</label><p id="fy-help">Reporting period for this AOC-4 demo.</p><input id="field-fy" value={form.financialYear} onFocus={() => onFieldFocus('field-fy')} onChange={(e) => onChange('financialYear', e.target.value)} aria-describedby="fy-help" /></div><div className="field"><label htmlFor="field-agm">AGM date</label><p id="agm-help">Date used by the deterministic demo checks.</p><input id="field-agm" type="date" value={form.agmDate} onFocus={() => onFieldFocus('field-agm')} onChange={(e) => onChange('agmDate', e.target.value)} aria-describedby="agm-help" /></div></fieldset>
+          {state.features.masterDrift && state.master && ['REVIEW_REQUIRED', 'PINNED_STOPPED'].includes(state.master.reviewState) && <MasterDriftPanel master={state.master} busy={busy === 'master'} onReview={onMasterReview} />}
+          <fieldset id="financials" disabled={!storageReady}><legend><span>02</span> Financial summary</legend><div className="field"><label htmlFor="field-revenue">Revenue (₹)</label><p id="revenue-help">Whole rupees, without separators.</p><input id="field-revenue" inputMode="numeric" value={form.revenue} onFocus={() => onFieldFocus('field-revenue')} onChange={(e) => onChange('revenue', e.target.value)} aria-describedby="revenue-help" /></div><div className="field"><label htmlFor="field-expenses">Expenses (₹)</label><p id="expenses-help">Whole rupees, without separators.</p><input id="field-expenses" inputMode="numeric" value={form.expenses} onFocus={() => onFieldFocus('field-expenses')} onChange={(e) => onChange('expenses', e.target.value)} aria-describedby="expenses-help" /></div><div className="field"><label htmlFor="field-profit">Net profit (₹)</label><p id="profit-help">Whole rupees, without separators.</p><input id="field-profit" inputMode="numeric" value={form.netProfit} onFocus={() => onFieldFocus('field-profit')} onChange={(e) => onChange('netProfit', e.target.value)} aria-describedby="profit-help" /></div></fieldset>
+          <fieldset id="governance" disabled={!storageReady}><legend><span>03</span> Governance</legend><div className="field"><label htmlFor="field-director">Director name</label><p id="director-help">Demo signatory shown on this filing.</p><input id="field-director" value={form.directorName} onFocus={() => onFieldFocus('field-director')} onChange={(e) => onChange('directorName', e.target.value)} aria-describedby="director-help" /></div><div className="field"><label htmlFor="field-boardMeetings">Board meetings</label><p id="meetings-help">Seeded with one deterministic issue for Jaanch.</p><input id="field-boardMeetings" inputMode="numeric" value={form.boardMeetings} onFocus={() => onFieldFocus('field-boardMeetings')} onChange={(e) => onChange('boardMeetings', e.target.value)} aria-describedby="meetings-help" /></div></fieldset>
+          <fieldset id="attachments"><legend><span>04</span> Verified attachments</legend><div className="attachment-list">{state.attachments.map((item) => <AttachmentUploadRow key={item.slot} item={item} session={state.uploadSessions.find((session) => session.slot === item.slot && session.state === 'UPLOADING')} progress={uploadProgress[item.slot]} online={online} busy={busy} resumable={state.features.resumableUploads} onUpload={onUpload} onPause={onPauseUpload} />)}</div><p className="attachment-help">12 MB demo limit. Filename must start <code>DARJ-</code>. Resumable uploads use TUS with 6 MB server-confirmed chunks in R2. DARJ marks a file complete only after MIME, byte count and SHA-256 verification.</p></fieldset>
         </form>
         <div className="draft-tools"><button className="secondary" onClick={onExport}>Export draft JSON</button><label className="secondary file-action">Import validated JSON<input type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) onImport(file); event.currentTarget.value = ''; }} /></label></div>
         <div className="action-bar"><div><strong>{saveState}</strong><small>Last server sync {formatTime(state.draft?.savedAt)}</small></div><button className="primary" onClick={onJaanch} disabled={busy === 'jaanch' || !online || !storageReady || Boolean(conflict) || saveState !== 'Saved locally · Synced'}>{busy === 'jaanch' ? 'Running 43 checks…' : !online ? 'Reconnect to run Jaanch' : 'Run Jaanch · जाँच'} <span aria-hidden="true">→</span></button></div>
       </div>
-      <aside className="record-strip"><p className="eyebrow">Record strip</p><RecordLine label="Case" value="DARJ-DEMO-AOC4-01" /><RecordLine label="Version" value={`v${state.draft?.version ?? 17}`} /><RecordLine label="Local" value={storageReady ? 'Saved' : 'Unavailable'} tone={storageReady ? 'durable' : undefined} /><RecordLine label="Server" value={online ? 'Synced' : 'Offline'} tone={online ? 'durable' : undefined} /><RecordLine label="Files" value={`${state.attachments.length} / 3 verified`} tone="durable" /><RecordLine label="Master" value="Snapshot 7" /></aside>
+      <aside className="record-strip"><p className="eyebrow">Record strip</p><RecordLine label="Case" value="DARJ-DEMO-AOC4-01" /><RecordLine label="Version" value={`v${state.draft?.version ?? 17}`} /><RecordLine label="Local" value={storageReady ? 'Saved' : 'Unavailable'} tone={storageReady ? 'durable' : undefined} /><RecordLine label="Server" value={online ? 'Synced' : 'Offline'} tone={online ? 'durable' : undefined} /><RecordLine label="Files" value={`${state.attachments.length} / 3 verified`} tone="durable" /><RecordLine label="Master" value={`Snapshot ${state.master?.pinnedVersion ?? 7}`} /></aside>
     </section>
   );
 }
@@ -632,12 +782,26 @@ function ConflictPanel({ conflict, busy, onResolve }: { conflict: DraftConflict;
   return <section className="conflict-panel" aria-labelledby="conflict-title"><p className="eyebrow">Version conflict</p><h2 id="conflict-title">Choose which value becomes the next draft.</h2><p>No value has been overwritten. Server v{conflict.server.version} arrived after this local version.</p><div className="conflict-diff">{paths.map((path) => <div key={path}><strong>{fieldLabel(path)}</strong><span><small>Local</small>{conflict.local[path as keyof FormShape]}</span><span><small>Server</small>{conflict.server.form[path as keyof FormShape]}</span></div>)}</div><div className="conflict-actions"><button className="primary" disabled={busy} onClick={() => onResolve('local')}>Keep local as new version</button><button className="secondary" disabled={busy} onClick={() => onResolve('server')}>Use server version</button></div></section>;
 }
 
-function JaanchScreen({ checks, blocking, passed, busy, online, onGoToField, onRerun, onSeal }: { checks: CheckRecord[]; blocking: CheckRecord[]; passed: CheckRecord[]; busy: string; online: boolean; onGoToField: () => void; onRerun: () => void; onSeal: () => void }) {
+function MasterDriftPanel({ master, busy, onReview }: { master: MasterState; busy: boolean; onReview: (choice: 'accept' | 'keep') => void }) {
+  const stopped = master.reviewState === 'PINNED_STOPPED';
+  return <section className="master-drift-panel" aria-labelledby="master-drift-title"><div className="issue-head"><code>DARJ_MASTER_DATA_DRIFT</code><Status label={stopped ? 'FILING STOPPED' : 'BLOCKS SEALING'} tone="attention" /></div><h2 id="master-drift-title">Registered office changed after this draft was saved.</h2><p>DARJ compared the pinned filing snapshot with the current demo company master. It will not replace this value silently.</p><dl><div><dt>Pinned snapshot {master.pinnedVersion}</dt><dd>{master.pinnedOffice}</dd></div><div><dt>Current snapshot {master.currentVersion}</dt><dd>{master.currentOffice}</dd></div><div><dt>Source</dt><dd>{master.source}</dd></div><div><dt>Detected</dt><dd>{formatTime(master.detectedAt)}</dd></div></dl>{stopped ? <p className="stopped-note"><strong>Meet kept the pinned value.</strong> This filing is stopped. Reset the demo run to begin again.</p> : <div className="conflict-actions"><button className="primary" disabled={busy} onClick={() => onReview('accept')}>Accept current snapshot and create new draft</button><button className="secondary" disabled={busy} onClick={() => onReview('keep')}>Keep pinned value and stop</button></div>}</section>;
+}
+
+function AttachmentUploadRow({ item, session, progress, online, busy, resumable, onUpload, onPause }: { item: Attachment; session?: UploadSession; progress?: UploadProgress; online: boolean; busy: string; resumable: boolean; onUpload: (slot: string, file: File) => void; onPause: (slot: string) => void }) {
+  const offset = progress?.offset ?? session?.confirmedOffset ?? 0;
+  const total = progress?.total ?? session?.expectedBytes ?? 0;
+  const partial = Boolean((progress && progress.state !== 'ERROR') || (session && session.confirmedOffset < session.expectedBytes));
+  const isUploading = progress?.state === 'UPLOADING' || progress?.state === 'HASHING';
+  const paused = progress?.state === 'PAUSED' || progress?.state === 'ERROR' || Boolean(session && !isUploading);
+  return <div className="attachment-row"><span className="file-mark" aria-hidden="true">PDF</span><div className="attachment-name"><strong>{labelSlot(item.slot)}</strong><small>{partial ? `${progress?.filename ?? session?.filename} · ${formatBytes(offset)} of ${formatBytes(total)} safely stored` : `${item.filename} · ${formatBytes(item.bytes)}`}</small>{partial && <progress max={total || 1} value={offset} aria-label={`${labelSlot(item.slot)} upload progress`} />}</div><Status label={partial ? isUploading ? 'UPLOADING' : 'UPLOAD PAUSED' : 'SERVER VERIFIED'} tone={partial ? isUploading ? 'progress' : 'attention' : 'durable'} /><code title={item.sha256}>{shortHash(item.sha256)}</code><div className="attachment-actions">{resumable && isUploading && <button type="button" className="secondary" onClick={() => onPause(item.slot)}>Pause</button>}<label className={`secondary file-action ${!online ? 'disabled' : ''}`}>{paused ? 'Select same file to resume' : 'Replace'}<input type="file" accept="application/pdf,.pdf" disabled={!online || (busy.startsWith('upload:') && !paused)} onChange={(event) => { const file = event.target.files?.[0]; if (file) onUpload(item.slot, file); event.currentTarget.value = ''; }} /></label></div></div>;
+}
+
+function JaanchScreen({ checks, blocking, passed, busy, online, onGoToField, onRerun, onSeal }: { checks: CheckRecord[]; blocking: CheckRecord[]; passed: CheckRecord[]; busy: string; online: boolean; onGoToField: (fieldPath: string | null) => void; onRerun: () => void; onSeal: () => void }) {
   const total = checks.length || 43;
   return (
     <section className="page-section narrow-page" aria-labelledby="jaanch-title">
       <div className="page-heading"><div><p className="eyebrow">Jaanch · जाँच</p><h1 id="jaanch-title">{total} checks · {passed.length} passed · {blocking.length} needs attention</h1></div><p>Deterministic rules. DARJ-RULES-1.1. Demo company master snapshot 7.</p></div>
-      {blocking.length > 0 ? <div className="check-group" role="alert" tabIndex={-1}><h2><span className="status-mark attention" /> Needs attention</h2>{blocking.map((issue) => <article className="issue-panel" key={issue.code}><div className="issue-head"><code>{issue.code}</code><Status label="BLOCKS SEALING" tone="attention" /></div><h3>{issue.summary}</h3><p>{issue.detail}</p><dl><div><dt>Expected</dt><dd>{issue.expected}</dd></div><div><dt>Actual</dt><dd>{issue.actual}</dd></div><div><dt>Location</dt><dd>Governance / Board meetings</dd></div><div><dt>Retry safety</dt><dd>Safe after correcting this field</dd></div></dl><button className="secondary" onClick={onGoToField}>Go to exact field <span aria-hidden="true">→</span></button></article>)}</div> : <div className="all-clear"><span className="custody-mark mini" aria-hidden="true">✓</span><div><p className="eyebrow">Ready to seal</p><h2>All 43 deterministic checks passed.</h2><p>Jaanch does not decide legal compliance or the sufficiency of narrative disclosures.</p></div></div>}
+      {blocking.length > 0 ? <div className="check-group" role="alert" tabIndex={-1}><h2><span className="status-mark attention" /> Needs attention</h2>{blocking.map((issue) => <article className="issue-panel" key={issue.code}><div className="issue-head"><code>{issue.code}</code><Status label="BLOCKS SEALING" tone="attention" /></div><h3>{issue.summary}</h3><p>{issue.detail}</p><dl><div><dt>Expected</dt><dd>{issue.expected}</dd></div><div><dt>Actual</dt><dd>{issue.actual}</dd></div><div><dt>Location</dt><dd>{issue.fieldPath === 'registeredOffice' ? 'Company record / Registered office' : 'Governance / Board meetings'}</dd></div><div><dt>Retry safety</dt><dd>Safe after explicit review or correction</dd></div></dl><button className="secondary" onClick={() => onGoToField(issue.fieldPath)}>Go to exact field <span aria-hidden="true">→</span></button></article>)}</div> : <div className="all-clear"><span className="custody-mark mini" aria-hidden="true">✓</span><div><p className="eyebrow">Ready to seal</p><h2>All 43 deterministic checks passed.</h2><p>Jaanch does not decide legal compliance or the sufficiency of narrative disclosures.</p></div></div>}
       <details className="passed-checks"><summary>Passed <span>{passed.length} checks</span></summary><div className="check-list">{passed.map((check) => <div key={check.code}><code>{check.code}</code><span>{check.summary}</span><Status label="PASSED" tone="durable" /></div>)}</div></details>
       <details className="passed-checks"><summary>Not applicable <span>0 checks</span></summary><p>No rule was classified as not applicable for this seeded case.</p></details>
       <div className="action-bar"><div><strong>{blocking.length ? 'One issue blocks sealing' : 'Rule result fixed to this draft version'}</strong><small>Editing after this run makes Jaanch stale.</small></div>{blocking.length ? <button className="secondary" onClick={onRerun} disabled={busy === 'jaanch' || !online}>Rerun Jaanch</button> : <button className="primary" onClick={onSeal} disabled={busy === 'seal' || !online}>{busy === 'seal' ? 'Creating immutable package…' : !online ? 'Reconnect to create Mohar' : 'Create Mohar · मुहर'} <span aria-hidden="true">→</span></button>}</div>
@@ -671,17 +835,26 @@ function StatusScreen({ state, accepted, busy, online, onPause, onResume }: { st
 }
 
 function RecoveryScreen({ state, onOpenMain }: { state: AppState; onOpenMain: () => void }) {
-  const items = [
-    { folio: 'R-01', title: 'Submission response loss', state: state.receipt ? 'RECOVERED' : 'READY', detail: 'The first response is lost after commit. DARJ reuses one persisted key and returns the same Rasid.' },
-    { folio: 'R-02', title: 'Payment callback loss', state: state.payment?.state === 'PAID' ? 'RECONCILED' : 'READY', detail: 'The server approves the demo payment while the browser misses the callback. Reload never asks for a second payment.' },
-    { folio: 'R-03', title: 'Processor outage', state: state.processorPaused ? 'DELAYED' : 'READY', detail: 'Pausing job claims preserves custody and payment. No resubmission is needed.' },
-    { folio: 'R-04', title: 'Browser interruption', state: 'LOCAL-FIRST', detail: 'A versioned local draft restores before network reconciliation and survives this demo session.' },
+  const items: Array<{ folio: string; title: string; state: string; detail: string; tone: 'durable' | 'progress' | 'attention' }> = [
+    { folio: 'R-01', title: 'Submission response loss', state: state.receipt ? 'RECOVERED' : 'READY', detail: 'The first response is lost after commit. DARJ reuses one persisted key and returns the same Rasid.', tone: state.receipt ? 'durable' : 'progress' },
+    { folio: 'R-02', title: 'Payment callback loss', state: state.payment?.state === 'PAID' ? 'RECONCILED' : 'READY', detail: 'The server approves the demo payment while the browser misses the callback. Reload never asks for a second payment.', tone: state.payment?.state === 'PAID' ? 'durable' : 'progress' },
+    { folio: 'R-03', title: 'Processor outage', state: state.processorPaused ? 'DELAYED' : 'READY', detail: 'Pausing job claims preserves custody and payment. No resubmission is needed.', tone: state.processorPaused ? 'attention' : 'progress' },
+    { folio: 'R-04', title: 'Browser interruption', state: 'LOCAL FIRST', detail: 'A versioned local draft restores before network reconciliation and survives this demo session.', tone: 'durable' },
   ];
-  return <section className="page-section register-page" aria-labelledby="recovery-title"><div className="page-heading"><div><p className="eyebrow">Case B · Recovery examples</p><h1 id="recovery-title">Failure should be recoverable, not ambiguous.</h1></div><p>Only implemented P0 recovery paths appear here. Disabled P1 features are omitted completely.</p></div><div className="recovery-list">{items.map((item) => <article key={item.folio}><span className="mono">{item.folio}</span><div><h2>{item.title}</h2><p>{item.detail}</p></div><Status label={item.state} tone={item.state === 'READY' ? 'progress' : 'durable'} /></article>)}</div><div className="action-bar"><div><strong>Run the full recovery path</strong><small>Case A begins with one Jaanch issue and deterministic response loss.</small></div><button className="primary" onClick={onOpenMain}>Open Case A <span aria-hidden="true">→</span></button></div></section>;
+  if (state.features.recoveryCase && state.features.resumableUploads) items.push({ folio: 'R-05', title: 'Resumable attachment upload', state: state.uploadSessions.some((session) => session.state === 'UPLOADING') ? 'PAUSED' : 'READY', detail: 'TUS resumes from the R2-backed, server-confirmed offset after a tab reload. Completed chunks are not sent again.', tone: state.uploadSessions.some((session) => session.state === 'UPLOADING') ? 'attention' : 'progress' });
+  if (state.features.recoveryCase && state.features.masterDrift) items.push({ folio: 'R-06', title: 'Company master drift', state: state.master?.reviewState === 'REVIEW_REQUIRED' ? 'REVIEW REQUIRED' : state.master?.reviewState === 'ACCEPTED' ? 'REVIEWED' : 'READY', detail: 'A registered-office change is shown old versus new and blocks sealing until Meet explicitly accepts it or stops.', tone: state.master?.reviewState === 'REVIEW_REQUIRED' ? 'attention' : state.master?.reviewState === 'ACCEPTED' ? 'durable' : 'progress' });
+  if (state.features.recoveryCase && state.features.correctionLineage) items.push({ folio: 'R-07', title: 'Correction lineage', state: state.lineage.length ? 'V23 LINKED TO V24' : state.correction ? 'RESUBMISSION REQUIRED' : 'READY', detail: 'A board-report correction creates a linked v24 while the accepted v23 package and hash remain unchanged.', tone: state.lineage.length ? 'durable' : state.correction ? 'attention' : 'progress' });
+  return <section className="page-section register-page" aria-labelledby="recovery-title"><div className="page-heading"><div><p className="eyebrow">Case B · Recovery examples</p><h1 id="recovery-title">Failure should be recoverable, not ambiguous.</h1></div><p>This register includes every enabled P0 and P1 recovery path. Each control is isolated to this demo run.</p></div><div className="recovery-list">{items.map((item) => <article key={item.folio}><span className="mono">{item.folio}</span><div><h2>{item.title}</h2><p>{item.detail}</p></div><Status label={item.state} tone={item.tone} /></article>)}</div><div className="action-bar"><div><strong>Run the full recovery path</strong><small>Use authenticated demo controls to arm uploads, master drift, callbacks, processing pauses and correction lineage.</small></div><button className="primary" onClick={onOpenMain}>Open Case A <span aria-hidden="true">→</span></button></div></section>;
 }
 
-function DemoControlsScreen({ state, busy, onControl, onPause, onResume, onReset }: { state: AppState; busy: string; onControl: (flag: string) => void; onPause: () => void; onResume: () => void; onReset: () => void }) {
-  return <section className="page-section narrow-page" aria-labelledby="controls-title"><div className="page-heading"><div><p className="eyebrow">Authenticated demo controls</p><h1 id="controls-title">Reproduce P0 recovery paths deterministically.</h1></div><Status label="DEMO RUN ONLY" tone="attention" /></div><p className="scope-note">These controls apply only to this isolated demo run. Disabled P1 controls do not exist here.</p><div className="control-register"><div><span className="mono">01</span><div><strong>Submission response loss</strong><p>Commit custody, then lose the browser response once.</p></div><button className="secondary" onClick={() => onControl('submission')}>Arm</button></div><div><span className="mono">02</span><div><strong>Payment callback loss</strong><p>Approve once on the server, then reconcile after the browser misses the callback.</p></div><button className="secondary" onClick={() => onControl('payment')}>Arm</button></div><div><span className="mono">03</span><div><strong>Transaction rollback</strong><p>Fail before commit and prove that no custody record or Rasid exists.</p></div><button className="secondary" onClick={() => onControl('transaction_failure')}>Arm once</button></div><div><span className="mono">04</span><div><strong>Serialization retry</strong><p>Force one retry before the atomic custody batch converges.</p></div><button className="secondary" onClick={() => onControl('serialization_once')}>Arm once</button></div><div><span className="mono">05</span><div><strong>Session expiry</strong><p>Expire this session so the next request must re-authenticate and restore IndexedDB work.</p></div><button className="secondary" onClick={() => onControl('expire_session')}>Expire</button></div><div><span className="mono">06</span><div><strong>Durable processor</strong><p>Pause or resume job claims without changing custody or payment.</p></div>{state.processorPaused ? <button className="primary" onClick={onResume}>Resume</button> : <button className="secondary" onClick={onPause}>Pause</button>}</div></div><div className="action-bar"><div><strong>Reset is limited to this run</strong><small>It deletes and reseeds only this run’s D1 rows and R2 prefix.</small></div><button className="secondary" disabled={busy === 'reset'} onClick={onReset}>Reset this demo run</button></div></section>;
+function LineageScreen({ state, busy, onCreate, onSign }: { state: AppState; busy: string; onCreate: () => void; onSign: () => void }) {
+  const correction = state.correction;
+  return <section className="page-section narrow-page" aria-labelledby="lineage-title"><div className="page-heading"><div><p className="eyebrow">Package lineage</p><h1 id="lineage-title">Corrections preserve the original.</h1></div><p>Every child package points to its immutable parent. Changed paths are explicit and earlier hashes remain untouched.</p></div>{!correction && <div className="boundary-note"><strong>No correction requested</strong><p>Complete the accepted journey, then use Demo controls to return a board-report resubmission request.</p></div>}{correction?.state === 'REQUIRED' && <div className="correction-request"><div className="issue-head"><code>{correction.requestId}</code><Status label="RESUBMISSION REQUIRED" tone="attention" /></div><h2>{correction.summary}</h2><p>Source package: <code>{correction.sourcePackageId}</code>. DARJ will clone its filing data, replace only the board report and seal a linked v24.</p><button className="primary" disabled={busy === 'correction'} onClick={onCreate}>{busy === 'correction' ? 'Creating verified correction…' : 'Create corrected v24'} <span aria-hidden="true">→</span></button></div>}<div className="lineage-list">{state.lineage.map((record) => <article key={record.child.packageId}><div className="lineage-node"><small>Original package</small><strong>{record.parent.packageId} · v{record.parent.version}</strong><code>{shortHash(record.parent.hash)}</code><span>Immutable</span></div><div className="lineage-arrow" aria-hidden="true">→</div><div className="lineage-node current"><small>Correction package</small><strong>{record.child.packageId} · v{record.child.version}</strong><code>{shortHash(record.child.hash)}</code><span>Parent: {record.parent.packageId}</span></div><div className="lineage-change"><strong>One highlighted change</strong><p>{record.reason}</p><code>{record.changedPaths.join(', ')}</code></div></article>)}</div>{state.lineage.length > 0 && state.package?.packageId === correction?.childPackageId && !state.signatureValid && <div className="action-bar"><div><strong>v24 is sealed and linked to v23</strong><small>The corrected package now needs its own signature before resubmission.</small></div><button className="primary" onClick={onSign}>Open v24 Mohar <span aria-hidden="true">→</span></button></div>}</section>;
+}
+
+function DemoControlsScreen({ state, busy, onControl, onPause, onResume, onReset, onLineage }: { state: AppState; busy: string; onControl: (flag: string) => void; onPause: () => void; onResume: () => void; onReset: () => void; onLineage: () => void }) {
+  const accepted = state.events.some((event) => event.eventType === 'ACCEPTED');
+  return <section className="page-section narrow-page" aria-labelledby="controls-title"><div className="page-heading"><div><p className="eyebrow">Authenticated demo controls</p><h1 id="controls-title">Reproduce recovery paths deterministically.</h1></div><Status label="DEMO RUN ONLY" tone="attention" /></div><p className="scope-note">These controls apply only to this isolated demo run. Only enabled, tested P1 controls are shown.</p><div className="control-register"><div><span className="mono">01</span><div><strong>Submission response loss</strong><p>Commit custody, then lose the browser response once.</p></div><button className="secondary" onClick={() => onControl('submission')}>Arm</button></div><div><span className="mono">02</span><div><strong>Payment callback loss</strong><p>Approve once on the server, then reconcile after the browser misses the callback.</p></div><button className="secondary" onClick={() => onControl('payment')}>Arm</button></div><div><span className="mono">03</span><div><strong>Transaction rollback</strong><p>Fail before commit and prove that no custody record or Rasid exists.</p></div><button className="secondary" onClick={() => onControl('transaction_failure')}>Arm once</button></div><div><span className="mono">04</span><div><strong>Serialization retry</strong><p>Force one retry before the atomic custody batch converges.</p></div><button className="secondary" onClick={() => onControl('serialization_once')}>Arm once</button></div><div><span className="mono">05</span><div><strong>Session expiry</strong><p>Expire this session so the next request must re-authenticate and restore IndexedDB work.</p></div><button className="secondary" onClick={() => onControl('expire_session')}>Expire</button></div><div><span className="mono">06</span><div><strong>Durable processor</strong><p>Pause or resume job claims without changing custody or payment.</p></div>{state.processorPaused ? <button className="primary" onClick={onResume}>Resume</button> : <button className="secondary" onClick={onPause}>Pause</button>}</div>{state.features.recoveryCase && state.features.resumableUploads && <div><span className="mono">07</span><div><strong>Resumable upload interruption</strong><p>Pause after the next 6 MB chunk is safely stored, then reload and select the same PDF to resume.</p></div><button className="secondary" onClick={() => onControl('upload_pause')} disabled={state.uploadPauseArmed}>Arm pause</button></div>}{state.features.recoveryCase && state.features.masterDrift && <div><span className="mono">08</span><div><strong>Company master drift</strong><p>Change the current registered office after the draft pinned snapshot 7.</p></div><button className="secondary" onClick={() => onControl('master_drift')} disabled={state.master?.reviewState !== 'CURRENT'}>Change master</button></div>}{state.features.recoveryCase && state.features.correctionLineage && <div><span className="mono">09</span><div><strong>Board report resubmission</strong><p>Return the accepted package for one correction while preserving its original hash.</p></div>{state.correction ? <button className="secondary" onClick={onLineage}>View lineage</button> : <button className="secondary" onClick={() => onControl('correction_request')} disabled={!accepted}>Return package</button>}</div>}</div><div className="action-bar"><div><strong>Reset is limited to this run</strong><small>It aborts partial uploads and deletes and reseeds only this run’s D1 rows and R2 prefix.</small></div><button className="secondary" disabled={busy === 'reset'} onClick={onReset}>Reset this demo run</button></div></section>;
 }
 
 function PublicInformationScreen({ screen, onNavigate }: { screen: 'evidence' | 'limitations'; onNavigate: (screen: Screen) => void }) {
@@ -742,6 +915,14 @@ function CopyButton({ value }: { value: string }) {
 }
 
 function journeyLabel(state: AppState) {
+  if (state.correction?.state === 'REQUIRED') return 'RESUBMISSION REQUIRED';
+  if (state.lineage.length && state.package?.packageId === state.correction?.childPackageId) {
+    if (state.processingJob?.state === 'ACCEPTED') return 'CORRECTED V24 · ACCEPTED';
+    if (state.payment?.state === 'PAID') return 'CORRECTED V24 · PAID · QUEUED';
+    if (state.receipt) return 'CORRECTED V24 · RECEIVED';
+    if (state.signatureValid) return 'CORRECTED V24 · SIGNED';
+    return 'CORRECTED V24 · SIGNATURE REQUIRED';
+  }
   if (state.events.some((event) => event.eventType === 'ACCEPTED')) return 'ACCEPTED';
   if (state.processorPaused) return 'PROCESSING DELAYED';
   if (state.payment?.state === 'PAID') return 'PAID · QUEUED';
@@ -753,6 +934,13 @@ function journeyLabel(state: AppState) {
 }
 
 function resumeScreen(state: AppState): Screen {
+  if (state.correction?.state === 'REQUIRED') return 'lineage';
+  if (state.correction?.state === 'COMPLETED' && state.package?.packageId === state.correction.childPackageId) {
+    if (state.processingJob?.state === 'ACCEPTED' || state.payment?.state === 'PAID') return 'status';
+    if (state.receipt) return 'rasid';
+    if (state.signatureValid) return 'sign';
+    return 'lineage';
+  }
   if (state.events.some((event) => event.eventType === 'ACCEPTED') || state.payment?.state === 'PAID') return 'status';
   if (state.receipt) return 'rasid';
   if (state.signature && state.signatureValid) return 'sign';
@@ -765,6 +953,7 @@ function eventGlyph(type: string) { if (type === 'PROCESSING_DELAYED') return '!
 function labelSlot(slot: string) { return ({ financialStatements: 'Financial statements', auditorReport: 'Auditor’s report', boardReport: 'Board report' } as Record<string, string>)[slot] ?? slot; }
 function shortHash(hash: string) { return `${hash.slice(0, 9)}…${hash.slice(-7)}`; }
 function formatTime(value?: string | null) { if (!value) return 'Not available'; return new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'medium', timeZone: 'Asia/Kolkata' }).format(new Date(value)) + ' IST'; }
+function formatBytes(bytes: number) { if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`; if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`; return `${bytes} bytes`; }
 function formatReceiptTime(value: string) { return new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' }).format(new Date(value)).toUpperCase() + ' IST'; }
 function wait(ms: number) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
@@ -804,6 +993,22 @@ function readBrowserCookie(name: string) {
   return part ? decodeURIComponent(part.slice(name.length + 1)) : null;
 }
 
+type TusStoredUpload = { size: number | null; metadata: Record<string, string>; creationTime: string; urlStorageKey: string; uploadUrl: string | null; parallelUploadUrls: string[] | null; fingerprint: string };
+
+class IndexedDbTusUrlStorage {
+  private readonly key = 'tus:url-storage';
+  async findAllUploads() { return (await localGet<TusStoredUpload[]>(this.key)) ?? []; }
+  async findUploadsByFingerprint(fingerprint: string) { return (await this.findAllUploads()).filter((upload) => upload.fingerprint === fingerprint); }
+  async removeUpload(urlStorageKey: string) { await localPut(this.key, (await this.findAllUploads()).filter((upload) => upload.urlStorageKey !== urlStorageKey)); }
+  async addUpload(fingerprint: string, upload: Omit<TusStoredUpload, 'fingerprint'>) {
+    const urlStorageKey = upload.urlStorageKey || `tus:${crypto.randomUUID()}`;
+    const uploads = (await this.findAllUploads()).filter((entry) => entry.urlStorageKey !== urlStorageKey);
+    uploads.push({ ...upload, urlStorageKey, fingerprint });
+    await localPut(this.key, uploads);
+    return urlStorageKey;
+  }
+}
+
 function fieldLabel(path: string) {
   return ({ registeredOffice: 'Registered office', financialYear: 'Financial year', agmDate: 'AGM date', boardMeetings: 'Board meetings', revenue: 'Revenue', expenses: 'Expenses', netProfit: 'Net profit', directorName: 'Director name' } as Record<string, string>)[path] ?? path;
 }
@@ -818,6 +1023,7 @@ function screenFromPath(pathname: string): Screen {
   if (pathname.includes('/sign')) return 'sign';
   if (pathname.includes('/rasid/')) return 'rasid';
   if (pathname.includes('/status')) return 'status';
+  if (pathname.includes('/lineage')) return 'lineage';
   if (pathname === '/recovery') return 'recovery';
   if (pathname === '/filings') return 'filings';
   return 'login';
@@ -827,6 +1033,6 @@ function pathForScreen(screen: Screen, caseId = 'DARJ-DEMO-AOC4-01') {
   return ({
     login: '/login', filings: '/filings', prepare: `/filings/${caseId}/prepare`, jaanch: `/filings/${caseId}/jaanch`,
     mohar: `/filings/${caseId}/mohar`, sign: `/filings/${caseId}/sign`, rasid: `/filings/${caseId}/rasid/DARJ-RASID-8129`,
-    status: `/filings/${caseId}/status`, recovery: '/recovery', evidence: '/evidence', limitations: '/limitations', demoControls: '/demo-controls',
+    status: `/filings/${caseId}/status`, lineage: `/filings/${caseId}/lineage`, recovery: '/recovery', evidence: '/evidence', limitations: '/limitations', demoControls: '/demo-controls',
   } satisfies Record<Screen, string>)[screen];
 }

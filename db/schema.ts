@@ -37,6 +37,42 @@ export const attachments = sqliteTable('attachments', {
   uniqueIndex('uniq_attachment_object_key').on(table.objectKey),
 ]);
 
+export const uploadSessions = sqliteTable('upload_sessions', {
+  runId: text('run_id').notNull(),
+  uploadId: text('upload_id').notNull(),
+  caseId: text('case_id').notNull(),
+  slot: text('slot').notNull(),
+  filename: text('filename').notNull(),
+  expectedBytes: integer('expected_bytes').notNull(),
+  confirmedOffset: integer('confirmed_offset').notNull().default(0),
+  clientSha256: text('client_sha256').notNull(),
+  fingerprint: text('fingerprint').notNull(),
+  objectKey: text('object_key').notNull(),
+  providerUploadId: text('provider_upload_id'),
+  uploadedPartsJson: text('uploaded_parts_json').notNull().default('[]'),
+  state: text('state').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+  expiresAt: text('expires_at').notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.runId, table.uploadId] }),
+  uniqueIndex('uniq_upload_id').on(table.uploadId),
+  index('idx_upload_slot').on(table.runId, table.caseId, table.slot, table.state),
+]);
+
+export const caseMasterState = sqliteTable('case_master_state', {
+  runId: text('run_id').notNull(),
+  caseId: text('case_id').notNull(),
+  pinnedVersion: integer('pinned_version').notNull(),
+  pinnedOffice: text('pinned_office').notNull(),
+  currentVersion: integer('current_version').notNull(),
+  currentOffice: text('current_office').notNull(),
+  source: text('source').notNull(),
+  reviewState: text('review_state').notNull(),
+  detectedAt: text('detected_at'),
+  reviewedAt: text('reviewed_at'),
+}, (table) => [primaryKey({ columns: [table.runId, table.caseId] })]);
+
 export const filingPackages = sqliteTable('filing_packages', {
   runId: text('run_id').notNull(),
   packageId: text('package_id').notNull(),
@@ -49,6 +85,34 @@ export const filingPackages = sqliteTable('filing_packages', {
 }, (table) => [
   primaryKey({ columns: [table.runId, table.packageId] }),
   uniqueIndex('uniq_package_case_version').on(table.runId, table.caseId, table.version),
+]);
+
+export const packageLineage = sqliteTable('package_lineage', {
+  runId: text('run_id').notNull(),
+  childPackageId: text('child_package_id').notNull(),
+  parentPackageId: text('parent_package_id').notNull(),
+  reason: text('reason').notNull(),
+  changedPathsJson: text('changed_paths_json').notNull(),
+  createdAt: text('created_at').notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.runId, table.childPackageId] }),
+  uniqueIndex('uniq_lineage_parent_child').on(table.runId, table.parentPackageId, table.childPackageId),
+]);
+
+export const correctionRequests = sqliteTable('correction_requests', {
+  runId: text('run_id').notNull(),
+  requestId: text('request_id').notNull(),
+  caseId: text('case_id').notNull(),
+  sourcePackageId: text('source_package_id').notNull(),
+  documentSlot: text('document_slot').notNull(),
+  summary: text('summary').notNull(),
+  state: text('state').notNull(),
+  childPackageId: text('child_package_id'),
+  createdAt: text('created_at').notNull(),
+  resolvedAt: text('resolved_at'),
+}, (table) => [
+  primaryKey({ columns: [table.runId, table.requestId] }),
+  uniqueIndex('uniq_open_correction_source').on(table.runId, table.sourcePackageId),
 ]);
 
 export const demoSignatures = sqliteTable('synthetic_signatures', {

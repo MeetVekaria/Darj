@@ -1,4 +1,4 @@
-export const MAX_DEMO_PDF_BYTES = 5 * 1024 * 1024;
+export const MAX_DEMO_PDF_BYTES = 12 * 1024 * 1024;
 
 export function sniffDemoPdf(bytes: Uint8Array): boolean {
   if (bytes.byteLength < 8 || bytes.byteLength > MAX_DEMO_PDF_BYTES) return false;

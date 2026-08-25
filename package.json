@@ -18,11 +18,13 @@
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
+    "@tus/server": "2.4.4",
     "dexie": "4.4.5",
     "drizzle-orm": "0.45.2",
     "next": "16.3.2",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "tus-js-client": "4.3.1"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.13.0",

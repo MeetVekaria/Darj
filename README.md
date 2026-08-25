@@ -1,6 +1,6 @@
 # DARJ / दर्ज
 
-DARJ is an independent prototype for reliable MCA21 statutory filing journeys, demonstrated through one AOC-4 case. It shows local draft recovery, deterministic Jaanch checks, an immutable Mohar package, a package-bound demo signature, retry-safe custody submission, an immutable Rasid, payment reconciliation, and delayed processing.
+DARJ is an independent prototype for reliable MCA21 statutory filing journeys, demonstrated through one AOC-4 case. It shows local draft recovery, resumable verified attachments, deterministic Jaanch checks, master-data drift review, an immutable Mohar package, retry-safe custody submission, an immutable Rasid, payment reconciliation, delayed processing, and correction lineage.
 
 > **Built for the MCA21 filing context.** DARJ is independent, uses demo data, and does not connect to or represent the Ministry of Corporate Affairs or MCA21. Nothing in the product is a real statutory filing, legal advice, MCA acknowledgement, Digital Signature Certificate, or payment.
 
@@ -37,7 +37,8 @@ npm run build
 - Isolated 24-hour demo runs and deterministic reset.
 - IndexedDB-first draft snapshots with separate local-save and server-sync states.
 - D1-backed immutable server draft versions with base-version conflict responses.
-- Three seeded demo PDFs stored in R2, plus 5 MB P0 replacement upload with filename, MIME, PDF byte, EOF, byte count and SHA-256 verification.
+- Three seeded demo PDFs stored in R2, plus 12 MB TUS resumable upload with IndexedDB and server offsets, R2 multipart storage, filename/MIME/PDF/byte-count checks and client/server SHA-256 agreement.
+- Explicit company master drift review: old and current MCA21 demo registered-office values are compared and sealing remains blocked until Meet accepts the refresh or stops.
 - 43 versioned deterministic Jaanch results and exact-field navigation.
 - Canonical package construction using RFC 8785 semantics and SHA-256 hashing.
 - Append-only sealed package and a real Ed25519 verification operation using a fixed, non-secret demo key that is explicitly not a DSC.
@@ -46,6 +47,9 @@ npm run build
 - Intentional post-commit submission response loss with safe replay to the same Rasid.
 - Intentional payment callback loss with server reconciliation and no second payment request.
 - Durable processing-job state plus separately recorded `RECEIVED`, `PAID`, `PROCESSING DELAYED`, `PROCESSING`, and `ACCEPTED` events delivered by SSE with polling fallback.
+- Recoverable correction lineage that links a board-report-only v24 child to immutable v23 and gives the correction its own signing and resubmission boundary.
+- Expanded authenticated recovery controls for upload interruption, payment callback loss, company master drift, processor pause and correction lineage.
+- Sign out from every authenticated screen without deleting the recoverable local draft.
 - Same-origin mutation checks, double-submit CSRF protection, hashed login/control rate limits, strict cookies and security response headers.
 - Responsive filing register, prepare, Jaanch, Mohar, sign, Rasid, payment, processing, evidence, limitations and recovery views.
 - Print-safe A4 Rasid and persistent prototype disclosure.
@@ -54,7 +58,7 @@ npm run build
 
 The source specification described Next.js, Fastify, PostgreSQL and S3-compatible storage as separate applications. This deployable Round 1 build preserves the transaction boundaries in one Sites/Vinext application using Cloudflare D1 and R2. D1 `batch()` and unique constraints provide the atomic prototype custody boundary; no claim is made that this is a production MCA integration or production DSC/payment stack.
 
-P1 resumable TUS uploads, master-data drift and correction lineage remain disabled and are not rendered. This follows the specification’s rule that an enhancement must stay hidden until its acceptance behavior passes.
+All four P1 flags are enabled by default after their acceptance behaviors pass. Each flag can still be set to `false` independently without rolling back its additive D1 migration or exposing a dead control.
 
 ## Data and security boundary
 
@@ -69,6 +73,6 @@ P1 resumable TUS uploads, master-data drift and correction lineage remain disabl
 
 ## Libraries and starter disclosure
 
-The project was scaffolded with `@openai/create-sites@0.2.0`. Primary runtime libraries are React 19, Next 16, Vinext, Vite, the OpenAI Sites Vite plugin, Cloudflare Workers/D1/R2, and Drizzle ORM. `tsx` runs the small Node invariant suite. Exact versions and transitive packages are pinned in `package-lock.json`.
+The project was scaffolded with `@openai/create-sites@0.2.0`. Primary runtime libraries are React 19, Next 16, Vinext, Vite, the OpenAI Sites Vite plugin, Cloudflare Workers/D1/R2, Drizzle ORM, `tus-js-client`, and `@tus/server`. `tsx` runs the small Node invariant suite. Exact versions and transitive packages are pinned in `package-lock.json`.
 
 See [Architecture](docs/ARCHITECTURE.md), [Threat model](docs/THREAT_MODEL.md), [implementation status](docs/IMPLEMENTATION_STATUS.md), and the [Codex build log](docs/CODEX_BUILD_LOG.md).
