@@ -2,7 +2,7 @@ import { env } from 'cloudflare:workers';
 
 export const dynamic = 'force-dynamic';
 
-const CASE_ID = 'SYN-CASE-AOC4-01';
+const CASE_ID = 'DARJ-DEMO-AOC4-01';
 
 export async function GET(request: Request) {
   const runId = readRunId(request);
@@ -34,4 +34,3 @@ function readRunId(request: Request) {
 function activeRun(runId: string) {
   return env.DB.prepare('SELECT run_id FROM demo_runs WHERE run_id = ? AND expires_at > ?').bind(runId, new Date().toISOString()).first();
 }
-

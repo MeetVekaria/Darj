@@ -14,7 +14,7 @@ Vinext route handler
      │                                      │
      ▼                                      ▼
 Cloudflare D1                           Cloudflare R2
-versioned records, unique               synthetic PDF bytes under
+versioned records, unique               demo PDF bytes under
 constraints, ordered events             run-scoped object prefixes
 ```
 
@@ -43,7 +43,7 @@ Custody, payment and processing are separate records/events. The UI derives a jo
 ## Persistence
 
 - D1: demo runs, immutable draft snapshots, attachment metadata, packages, signatures, custody snapshots, receipts, submission/payment attempts, payment intents/events, durable processing jobs, ordered case events, rate limits and one-shot fault controls.
-- R2: synthetic PDF bytes. D1 stores authoritative metadata and ownership scope.
+- R2: demo PDF bytes. D1 stores authoritative metadata and ownership scope.
 - IndexedDB: the device-local recovery copy and persisted submission idempotency key. It is intentionally not the authority for custody, payment or processing.
 
 ## Request security

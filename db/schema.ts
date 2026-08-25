@@ -51,7 +51,7 @@ export const filingPackages = sqliteTable('filing_packages', {
   uniqueIndex('uniq_package_case_version').on(table.runId, table.caseId, table.version),
 ]);
 
-export const syntheticSignatures = sqliteTable('synthetic_signatures', {
+export const demoSignatures = sqliteTable('synthetic_signatures', {
   runId: text('run_id').notNull(), signatureId: text('signature_id').notNull(),
   packageId: text('package_id').notNull(), provider: text('provider').notNull(),
   signedHash: text('signed_hash').notNull(), signatureValue: text('signature_value').notNull(),

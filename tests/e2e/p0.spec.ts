@@ -3,7 +3,7 @@ import { expect, test, type Page } from '@playwright/test';
 
 async function login(page: Page) {
   await page.goto('/login');
-  await page.getByRole('button', { name: /Enter Priya’s filing/i }).click();
+  await page.getByRole('button', { name: /Enter Meet’s filing/i }).click();
   await expect(page).toHaveURL(/\/filings$/);
   await expect(page.getByRole('heading', { name: /Two cases/i })).toBeVisible();
 }
@@ -36,7 +36,7 @@ async function fixAndCheck(page: Page) {
 async function sealAndSign(page: Page) {
   await page.getByRole('button', { name: /Create Mohar/i }).click();
   await expect(page.getByRole('heading', { name: /immutable package is ready/i })).toBeVisible();
-  await page.getByRole('button', { name: /Continue to synthetic sign/i }).click();
+  await page.getByRole('button', { name: /Continue to demo signing/i }).click();
   await expect(page.getByText('SIGNED · VERIFIED')).toBeVisible();
   await expect(page.getByText('Ed25519 verification passed')).toBeVisible();
 }
@@ -48,7 +48,7 @@ async function completeJourney(page: Page) {
   await sealAndSign(page);
   await page.getByRole('button', { name: /Submit exact package/i }).click();
   await expect(page.getByRole('heading', { name: /exact package is in DARJ custody/i })).toBeVisible();
-  await expect(page.getByText('SYN-RASID-8129').first()).toBeVisible();
+  await expect(page.getByText('DARJ-RASID-8129').first()).toBeVisible();
   await page.getByRole('button', { name: /Approve simulated payment/i }).click();
   await expect(page.getByText('PAID · RECONCILED', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: /Track processing/i }).click();
@@ -109,7 +109,7 @@ test('browser interruption restores IndexedDB draft before server sync', async (
   const context = page.context();
   await page.close();
   const reopened = await context.newPage();
-  await reopened.goto('/filings/SYN-CASE-AOC4-01/prepare');
+  await reopened.goto('/filings/DARJ-DEMO-AOC4-01/prepare');
   await expect(reopened.getByLabel('Board meetings')).toHaveValue('7');
   await expect(reopened.getByText('Saved locally · Synced').first()).toBeVisible();
 });
@@ -146,7 +146,7 @@ test('session expiry preserves and resumes the local draft', async ({ page }, te
   });
   await page.reload();
   await expect(page.getByText('Local work is safe')).toBeVisible();
-  await page.getByRole('button', { name: /Enter Priya’s filing/i }).click();
+  await page.getByRole('button', { name: /Enter Meet’s filing/i }).click();
   await expect(page).toHaveURL(/\/prepare$/);
   await expect(page.getByLabel('Board meetings')).toHaveValue('5');
 });
@@ -155,7 +155,7 @@ test('P0 upload verifies stored PDF and edit after signing creates v24', async (
   test.skip(testInfo.project.name !== 'desktop-chromium', 'Upload and mutation behavior run once.');
   await login(page); await openPrepare(page);
   const boardRow = page.locator('.attachment-row').filter({ hasText: 'Board report' });
-  await boardRow.locator('input[type=file]').setInputFiles({ name: 'SYN-replacement-board-report.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4\n% DARJ synthetic replacement\n%%EOF') });
+  await boardRow.locator('input[type=file]').setInputFiles({ name: 'DARJ-replacement-board-report.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4\n% DARJ demo replacement\n%%EOF') });
   await expect(page.getByText(/server MIME, bytes, and SHA-256 verified/i)).toBeVisible();
   await fixAndCheck(page); await sealAndSign(page);
   await page.getByRole('button', { name: /Edit as new version/i }).click();
@@ -163,8 +163,8 @@ test('P0 upload verifies stored PDF and edit after signing creates v24', async (
   await expect(page.getByText('SIGNATURE INVALID · NEW VERSION REQUIRED')).toBeVisible();
   await page.getByRole('button', { name: /Run Jaanch/i }).click();
   await page.getByRole('button', { name: /Create Mohar/i }).click();
-  await expect(page.getByText('SYN-PKG-000024 · v24')).toBeVisible();
-  await page.getByRole('button', { name: /Continue to synthetic sign/i }).click();
+  await expect(page.getByText('DARJ-PKG-000024 · v24')).toBeVisible();
+  await page.getByRole('button', { name: /Continue to demo signing/i }).click();
   await expect(page.getByText('SIGNED · VERIFIED')).toBeVisible();
 });
 
@@ -211,7 +211,7 @@ test('security headers, cookie boundaries, and CSRF rejection protect mutations'
   expect(response?.headers()['content-security-policy']).toContain("default-src 'self'");
   expect(response?.headers()['x-frame-options']).toBe('DENY');
   expect(response?.headers()['x-content-type-options']).toBe('nosniff');
-  await page.getByRole('button', { name: /Enter Priya’s filing/i }).click();
+  await page.getByRole('button', { name: /Enter Meet’s filing/i }).click();
   await expect(page).toHaveURL(/\/filings$/);
   const cookies = await page.context().cookies();
   expect(cookies.find((cookie) => cookie.name === 'darj_demo_run')).toMatchObject({ httpOnly: true, sameSite: 'Strict' });
@@ -235,7 +235,7 @@ test('public and authenticated P0 routes have no serious Axe violations', async 
     expect(result.violations.filter((violation) => ['serious', 'critical'].includes(violation.impact ?? ''))).toEqual([]);
   }
   await login(page); await openPrepare(page);
-  for (const path of ['/filings', '/filings/SYN-CASE-AOC4-01/prepare', '/recovery', '/demo-controls']) {
+  for (const path of ['/filings', '/filings/DARJ-DEMO-AOC4-01/prepare', '/recovery', '/demo-controls']) {
     await page.goto(path);
     const result = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa']).analyze();
     expect(result.violations.filter((violation) => ['serious', 'critical'].includes(violation.impact ?? ''))).toEqual([]);

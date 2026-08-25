@@ -1,12 +1,12 @@
 # DARJ / दर्ज
 
-DARJ is an independent, browser-based filing-reliability prototype for one fully synthetic AOC-4 journey. It demonstrates local-first draft recovery, deterministic Jaanch checks, an immutable Mohar package, a package-bound synthetic signature, retry-safe custody submission, an immutable Rasid, payment reconciliation, and delayed asynchronous processing.
+DARJ is an independent prototype for reliable MCA21 statutory filing journeys, demonstrated through one AOC-4 case. It shows local draft recovery, deterministic Jaanch checks, an immutable Mohar package, a package-bound demo signature, retry-safe custody submission, an immutable Rasid, payment reconciliation, and delayed processing.
 
-> **Independent prototype · synthetic data · not an MCA service.** DARJ does not contact MCA21 or any other live government system. Nothing in the product is a real statutory filing, legal advice, MCA acknowledgement, Digital Signature Certificate, or payment.
+> **Built for the MCA21 filing context.** DARJ is independent, uses demo data, and does not connect to or represent the Ministry of Corporate Affairs or MCA21. Nothing in the product is a real statutory filing, legal advice, MCA acknowledgement, Digital Signature Certificate, or payment.
 
 ## Demo credentials
 
-- Email: `priya@darj.demo`
+- Email: `meet@darj.demo`
 - Password: `darj2026`
 
 Every successful login creates a session-scoped demo run. The shared credentials do not create shared filing state.
@@ -34,10 +34,10 @@ npm run build
 
 ## Implemented Round 1 surface
 
-- Isolated 24-hour synthetic demo runs and deterministic reset.
+- Isolated 24-hour demo runs and deterministic reset.
 - IndexedDB-first draft snapshots with separate local-save and server-sync states.
 - D1-backed immutable server draft versions with base-version conflict responses.
-- Three seeded synthetic PDFs stored in R2, plus 5 MB P0 replacement upload with filename, MIME, PDF-byte, EOF, byte-count and SHA-256 verification.
+- Three seeded demo PDFs stored in R2, plus 5 MB P0 replacement upload with filename, MIME, PDF byte, EOF, byte count and SHA-256 verification.
 - 43 versioned deterministic Jaanch results and exact-field navigation.
 - Canonical package construction using RFC 8785 semantics and SHA-256 hashing.
 - Append-only sealed package and a real Ed25519 verification operation using a fixed, non-secret demo key that is explicitly not a DSC.
@@ -58,7 +58,7 @@ P1 resumable TUS uploads, master-data drift and correction lineage remain disabl
 
 ## Data and security boundary
 
-- Only synthetic handles and tiny generated PDF fixtures are seeded.
+- Only generated demo handles and tiny PDF fixtures are seeded.
 - Aadhaar-like, PAN-like and valid-looking CIN patterns are rejected on draft sync.
 - Uploads are scoped under `demo/{demoRunId}/{caseId}/...` and the server ignores client ownership metadata.
 - Session cookies are HTTP-only and same-site; hosted HTTPS requests add the secure flag.

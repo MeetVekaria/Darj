@@ -1,28 +1,28 @@
 import { env } from 'cloudflare:workers';
 import { NextResponse } from 'next/server';
 import { canonicalize, sha256Hex } from '@/lib/canonical';
-import { MAX_SYNTHETIC_PDF_BYTES, sniffSyntheticPdf } from '@/lib/pdf';
+import { MAX_DEMO_PDF_BYTES, sniffDemoPdf } from '@/lib/pdf';
 import { containsRealLookingSensitiveIdentifier } from '@/lib/security';
-import { signPackageHash, verifyPackageSignature } from '@/lib/synthetic-signature.server';
+import { signPackageHash, verifyPackageSignature } from '@/lib/demo-signature.server';
 
 export const dynamic = 'force-dynamic';
 
 const COOKIE_NAME = 'darj_demo_run';
 const CSRF_COOKIE_NAME = 'darj_csrf';
-const CASE_ID = 'SYN-CASE-AOC4-01';
-const DEMO_EMAIL = 'priya@darj.demo';
+const CASE_ID = 'DARJ-DEMO-AOC4-01';
+const DEMO_EMAIL = 'meet@darj.demo';
 const DEMO_PASSWORD = 'darj2026';
 const ALLOWED_SLOTS = new Set(['financialStatements', 'auditorReport', 'boardReport']);
 
 const INITIAL_FORM = {
-  registeredOffice: '14, Synthetic Estate, Ahmedabad, Gujarat 380015',
+  registeredOffice: '14, Demo Business Park, Ahmedabad, Gujarat 380015',
   financialYear: '2025-26',
   agmDate: '2026-07-29',
   boardMeetings: '3',
   revenue: '124800000',
   expenses: '118250000',
   netProfit: '6550000',
-  directorName: 'SYN — Kavya Mehta',
+  directorName: 'Meet Vekaria',
 };
 
 const SCHEMA = [
@@ -121,7 +121,7 @@ type ValidationCheck = {
 export async function GET(request: Request) {
   await initializeDatabase();
   const runId = readRunId(request);
-  if (!runId) return errorResponse('DARJ_AUTH_REQUIRED', 'LOGIN', 'Enter the synthetic demo to continue.', false, 401);
+  if (!runId) return errorResponse('DARJ_AUTH_REQUIRED', 'LOGIN', 'Enter the DARJ demo to continue.', false, 401);
   if (!(await getRun(runId))) return errorResponse('DARJ_AUTH_REQUIRED', 'LOGIN', 'This demo session has expired. Your local draft is unchanged.', true, 401);
   return securedJson(await getState(runId));
 }
@@ -165,7 +165,7 @@ async function initializeDatabase() { await env.DB.batch(SCHEMA.map((sql) => env
 
 async function authorizeMutation(request: Request, stage: string): Promise<string | NextResponse> {
   const runId = readRunId(request);
-  if (!runId || !(await getRun(runId))) return errorResponse('DARJ_AUTH_REQUIRED', 'LOGIN', 'Re-enter the synthetic demo. Your local draft is unchanged.', true, 401);
+  if (!runId || !(await getRun(runId))) return errorResponse('DARJ_AUTH_REQUIRED', 'LOGIN', 'Re-enter the DARJ demo. Your local draft is unchanged.', true, 401);
   const requestOrigin = request.headers.get('origin');
   if (requestOrigin && requestOrigin !== new URL(request.url).origin) return errorResponse('DARJ_AUTH_REQUIRED', stage, 'The request origin could not be verified.', false, 403);
   const csrfHeader = request.headers.get('x-darj-csrf');
@@ -177,7 +177,7 @@ async function authorizeMutation(request: Request, stage: string): Promise<strin
 async function login(body: JsonBody, request: Request) {
   const clientKey = request.headers.get('cf-connecting-ip') ?? request.headers.get('x-forwarded-for') ?? 'local';
   if (!(await consumeRateLimit(`login:${clientKey}`, 60, 60_000))) return errorResponse('DARJ_AUTH_REQUIRED', 'LOGIN', 'Too many demo login attempts. Wait one minute and try again.', true, 429);
-  if (body.email !== DEMO_EMAIL || body.password !== DEMO_PASSWORD) return errorResponse('DARJ_AUTH_REQUIRED', 'LOGIN', 'Use the published synthetic demo credentials shown on this page.', true, 401);
+  if (body.email !== DEMO_EMAIL || body.password !== DEMO_PASSWORD) return errorResponse('DARJ_AUTH_REQUIRED', 'LOGIN', 'Use the demo credentials shown on this page.', true, 401);
   const runId = `run-${crypto.randomUUID()}`;
   const csrfToken = crypto.randomUUID();
   const now = new Date();
@@ -210,12 +210,12 @@ async function seedRun(runId: string) {
   await env.DB.prepare(`INSERT INTO draft_snapshots (run_id, case_id, version, base_version, form_json, changed_paths, saved_at) VALUES (?, ?, 17, 16, ?, ?, ?)`)
     .bind(runId, CASE_ID, JSON.stringify(INITIAL_FORM), JSON.stringify([]), savedAt).run();
   const files = [
-    ['financialStatements', 'SYN-financial-statements.pdf', 'Synthetic financial statements'],
-    ['auditorReport', 'SYN-auditor-report.pdf', 'Synthetic auditor report'],
-    ['boardReport', 'SYN-board-report.pdf', 'Synthetic board report'],
+    ['financialStatements', 'DARJ-financial-statements.pdf', 'Demo financial statements'],
+    ['auditorReport', 'DARJ-auditor-report.pdf', 'Demo auditor report'],
+    ['boardReport', 'DARJ-board-report.pdf', 'Demo board report'],
   ] as const;
   for (const [slot, filename, title] of files) {
-    const bytes = new TextEncoder().encode(`%PDF-1.4\n% DARJ synthetic document\n1 0 obj<</Type/Catalog>>endobj\n% ${title}\n%%EOF`);
+    const bytes = new TextEncoder().encode(`%PDF-1.4\n% DARJ demo document\n1 0 obj<</Type/Catalog>>endobj\n% ${title}\n%%EOF`);
     const objectKey = `demo/${runId}/${CASE_ID}/${slot}.pdf`;
     await env.FILES.put(objectKey, bytes, { httpMetadata: { contentType: 'application/pdf' } });
     const hash = await sha256Hex(bytes);
@@ -228,7 +228,7 @@ async function saveDraft(runId: string, body: JsonBody) {
   const form = body.form as FormDataShape | undefined;
   const baseVersion = Number(body.baseVersion);
   if (!form || !isValidForm(form) || !Number.isInteger(baseVersion)) throw new Error('DARJ_DRAFT_VERSION_CONFLICT|The draft version or schema could not be verified.');
-  if (containsRealLookingSensitiveIdentifier(form)) throw new Error('DARJ_SYNTHETIC_DATA_REQUIRED|Real-looking Aadhaar, PAN, or CIN patterns are rejected in this synthetic prototype.');
+  if (containsRealLookingSensitiveIdentifier(form)) throw new Error('DARJ_DEMO_DATA_REQUIRED|Real-looking Aadhaar, PAN, or CIN patterns are rejected in this demo.');
   const latest = await latestDraft(runId);
   if (!latest || Number(latest.version) !== baseVersion) {
     const serverForm = latest ? JSON.parse(String(latest.form_json)) as FormDataShape : INITIAL_FORM;
@@ -244,7 +244,7 @@ async function saveDraft(runId: string, body: JsonBody) {
   const savedAt = new Date().toISOString();
   await env.DB.prepare(`INSERT INTO draft_snapshots (run_id, case_id, version, base_version, form_json, changed_paths, saved_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
     .bind(runId, CASE_ID, nextVersion, baseVersion, JSON.stringify(form), JSON.stringify(changedPaths), savedAt).run();
-  if (changedPaths.length > 0 && await latestPackage(runId)) await appendUniqueEvent(runId, 'SIGNATURE_INVALID', 'DARJ', 'A later draft changed the package input. The prior synthetic signature cannot sign the new version.');
+  if (changedPaths.length > 0 && await latestPackage(runId)) await appendUniqueEvent(runId, 'SIGNATURE_INVALID', 'DARJ', 'A later draft changed the package input. The prior demo signature cannot sign the new version.');
   return securedJson({ version: nextVersion, savedAt, changedPaths });
 }
 
@@ -263,7 +263,7 @@ function buildChecks(form: FormDataShape): ValidationCheck[] {
   }));
   if (Number(form.boardMeetings) < 4) checks[16] = {
     ...checks[16], code: 'DARJ_BOARD_MEETING_COUNT', fieldPath: 'boardMeetings', blocking: true, retryable: true, status: 'NEEDS_ATTENTION',
-    summary: 'The synthetic board-meeting count is below this case’s expected value.',
+    summary: 'The board meeting count is below this case’s expected value.',
     detail: 'Update the count to 4 for this deterministic demo case. This is a DARJ prototype rule, not legal advice.', expected: '4', actual: form.boardMeetings,
   };
   return checks;
@@ -278,7 +278,7 @@ async function sealPackage(runId: string) {
   const existing = await latestPackage(runId);
   if (existing && packageInputsMatch(existing, form, attachments)) return securedJson(toPackage(existing));
   const version = existing ? Number(existing.version) + 1 : 23;
-  const packageId = `SYN-PKG-${String(version).padStart(6, '0')}`;
+  const packageId = `DARJ-PKG-${String(version).padStart(6, '0')}`;
   const canonicalPayload = canonicalize({
     hashVersion: 1, packageId, caseId: CASE_ID, packageVersion: version, formType: 'AOC-4 prototype', financialYear: '2025-26',
     formSchemaVersion: 'DARJ-AOC4-1.0', ruleVersion: 'DARJ-RULES-1.1', masterSnapshotVersion: 7, formData: form, attachments: attachmentManifest(attachments),
@@ -297,12 +297,12 @@ async function signPackage(runId: string) {
   const existing = await env.DB.prepare('SELECT * FROM synthetic_signatures WHERE run_id = ? AND package_id = ?').bind(runId, packageRow.package_id).first();
   if (existing) return securedJson(toSignature(existing));
   const signedAt = new Date().toISOString();
-  const signatureId = `SYN-SIG-${String(packageRow.version).padStart(6, '0')}`;
+  const signatureId = `DARJ-SIG-${String(packageRow.version).padStart(6, '0')}`;
   const signatureValue = await signPackageHash(String(packageRow.package_hash));
-  await env.DB.prepare(`INSERT INTO synthetic_signatures (run_id, signature_id, package_id, provider, signed_hash, signature_value, signed_at) VALUES (?, ?, ?, 'SYNTHETIC_ED25519', ?, ?, ?)`)
+  await env.DB.prepare(`INSERT INTO synthetic_signatures (run_id, signature_id, package_id, provider, signed_hash, signature_value, signed_at) VALUES (?, ?, ?, 'DARJ_DEMO_ED25519', ?, ?, ?)`)
     .bind(runId, signatureId, packageRow.package_id, packageRow.package_hash, signatureValue, signedAt).run();
-  await appendEvent(runId, 'SIGNED', 'Priya · synthetic signer', 'Verified Ed25519 demo signature bound to the server-confirmed package hash.');
-  return securedJson({ signatureId, packageId: String(packageRow.package_id), provider: 'SYNTHETIC_ED25519', signedHash: String(packageRow.package_hash), signatureValue, signedAt, verified: true });
+  await appendEvent(runId, 'SIGNED', 'Meet, demo filer', 'Verified Ed25519 demo signature bound to the server confirmed package hash.');
+  return securedJson({ signatureId, packageId: String(packageRow.package_id), provider: 'DARJ_DEMO_ED25519', signedHash: String(packageRow.package_hash), signatureValue, signedAt, verified: true });
 }
 
 async function submitPackage(runId: string, body: JsonBody) {
@@ -311,12 +311,12 @@ async function submitPackage(runId: string, body: JsonBody) {
   const packageRow = await latestPackage(runId);
   if (!packageRow || !(await isPackageCurrent(runId, packageRow))) throw new Error('DARJ_PACKAGE_HASH_MISMATCH|The sealed package no longer matches the latest draft and attachments.');
   const signature = await env.DB.prepare('SELECT * FROM synthetic_signatures WHERE run_id = ? AND package_id = ?').bind(runId, packageRow.package_id).first();
-  if (!signature || signature.provider !== 'SYNTHETIC_ED25519' || signature.signed_hash !== packageRow.package_hash || !(await verifyPackageSignature(String(packageRow.package_hash), String(signature.signature_value)))) throw new Error('DARJ_SIGNATURE_INVALID|The package signature could not be verified.');
+  if (!signature || signature.provider !== 'DARJ_DEMO_ED25519' || signature.signed_hash !== packageRow.package_hash || !(await verifyPackageSignature(String(packageRow.package_hash), String(signature.signature_value)))) throw new Error('DARJ_SIGNATURE_INVALID|The package signature could not be verified.');
   await verifyAttachments(runId);
   const requestedHash = typeof body.packageHash === 'string' ? body.packageHash : String(packageRow.package_hash);
   const requestedSignature = typeof body.signatureId === 'string' ? body.signatureId : String(signature.signature_id);
   const packageId = String(packageRow.package_id);
-  const fingerprint = await sha256Hex(new TextEncoder().encode(canonicalize({ authenticatedUserId: 'SYN-USER-PRIYA', demoRunId: runId, packageId, packageHash: requestedHash, signatureId: requestedSignature })));
+  const fingerprint = await sha256Hex(new TextEncoder().encode(canonicalize({ authenticatedUserId: 'DARJ-USER-MEET', demoRunId: runId, packageId, packageHash: requestedHash, signatureId: requestedSignature })));
   if (requestedHash !== packageRow.package_hash || requestedSignature !== signature.signature_id) throw new Error('DARJ_PACKAGE_HASH_MISMATCH|The requested package or signature does not match the sealed server record.');
   const replay = await submissionReplay(runId, idempotencyKey, fingerprint, packageId);
   if (replay) return securedJson({ ...replay, replayed: true });
@@ -330,19 +330,19 @@ async function submitPackage(runId: string, body: JsonBody) {
       return securedJson({ ...existingReceipt, replayed: true });
     }
     const receivedAt = new Date().toISOString();
-    const custodyId = `SYN-CUSTODY-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
-    const receiptId = `SYN-RASID-${packageRow.version === 23 ? '8129' : String(packageRow.version).padStart(4, '0')}`;
-    const paymentId = `SYN-PAY-${packageRow.version === 23 ? '4418' : String(packageRow.version).padStart(4, '0')}`;
-    const jobId = `SYN-JOB-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+    const custodyId = `DARJ-CUSTODY-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+    const receiptId = `DARJ-RASID-${packageRow.version === 23 ? '8129' : String(packageRow.version).padStart(4, '0')}`;
+    const paymentId = `DARJ-PAY-${packageRow.version === 23 ? '4418' : String(packageRow.version).padStart(4, '0')}`;
+    const jobId = `DARJ-JOB-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
     try {
       await env.DB.batch([
         env.DB.prepare(`INSERT INTO custody_submissions (run_id, custody_id, package_id, canonical_payload, package_hash, received_at) VALUES (?, ?, ?, ?, ?, ?)`).bind(runId, custodyId, packageId, packageRow.canonical_payload, packageRow.package_hash, receivedAt),
         env.DB.prepare(`INSERT INTO receipts (run_id, receipt_id, custody_id, package_id, package_hash, received_at) VALUES (?, ?, ?, ?, ?, ?)`).bind(runId, receiptId, custodyId, packageId, packageRow.package_hash, receivedAt),
-        env.DB.prepare(`INSERT INTO payment_intents (run_id, payment_id, custody_id, state, amount_paise, reconciliation_reference, updated_at) VALUES (?, ?, ?, 'PENDING', 600000, ?, ?)`).bind(runId, paymentId, custodyId, `SYN-RECON-${runId.slice(-8)}`, receivedAt),
+        env.DB.prepare(`INSERT INTO payment_intents (run_id, payment_id, custody_id, state, amount_paise, reconciliation_reference, updated_at) VALUES (?, ?, ?, 'PENDING', 600000, ?, ?)`).bind(runId, paymentId, custodyId, `DARJ-RECON-${runId.slice(-8)}`, receivedAt),
         env.DB.prepare(`INSERT INTO processing_jobs (run_id, job_id, custody_id, state, attempt_count, available_at) VALUES (?, ?, ?, 'WAITING_FOR_PAYMENT', 0, ?)`).bind(runId, jobId, custodyId, receivedAt),
         env.DB.prepare(`INSERT INTO submission_attempts (run_id, idempotency_key, request_fingerprint, package_id, receipt_id, outcome, attempted_at) VALUES (?, ?, ?, ?, ?, 'RECEIPT_CREATED', ?)`).bind(runId, idempotencyKey, fingerprint, packageId, receiptId, receivedAt),
       ]);
-      await appendEvent(runId, 'RECEIVED', 'DARJ custody gateway', 'Exact synthetic package committed to custody. This is not MCA acceptance.');
+      await appendEvent(runId, 'RECEIVED', 'DARJ custody gateway', 'Exact demo package committed to custody. No MCA21 filing has occurred.');
       const run = await getRun(runId);
       if (Number(run?.lose_submission) === 1) {
         await env.DB.prepare('UPDATE demo_runs SET lose_submission = 0 WHERE run_id = ?').bind(runId).run();
@@ -384,7 +384,7 @@ async function approvePayment(runId: string, body: JsonBody) {
   const existingAttempt = await env.DB.prepare('SELECT * FROM payment_attempts WHERE run_id = ? AND idempotency_key = ?').bind(runId, idempotencyKey).first();
   if (payment.state !== 'PAID') {
     const now = new Date().toISOString();
-    const providerEventId = `SYN-PROVIDER-${(await sha256Hex(new TextEncoder().encode(`${runId}:${payment.paymentId}`))).slice(0, 16)}`;
+    const providerEventId = `DARJ-PROVIDER-${(await sha256Hex(new TextEncoder().encode(`${runId}:${payment.paymentId}`))).slice(0, 16)}`;
     const job = await getProcessingJob(runId);
     await env.DB.batch([
       env.DB.prepare('UPDATE payment_intents SET state = ?, updated_at = ? WHERE run_id = ? AND payment_id = ?').bind('PAID', now, runId, payment.paymentId),
@@ -392,7 +392,7 @@ async function approvePayment(runId: string, body: JsonBody) {
       env.DB.prepare(`INSERT OR IGNORE INTO payment_attempts (run_id, idempotency_key, payment_id, outcome, attempted_at) VALUES (?, ?, ?, 'PAID', ?)`).bind(runId, idempotencyKey, payment.paymentId, now),
       env.DB.prepare(`UPDATE processing_jobs SET state = 'QUEUED', available_at = ? WHERE run_id = ? AND job_id = ?`).bind(now, runId, job?.jobId ?? ''),
     ]);
-    await appendUniqueEvent(runId, 'PAID', 'Synthetic payment simulator', 'Synthetic fee approved and recorded separately from custody.');
+    await appendUniqueEvent(runId, 'PAID', 'Demo payment simulator', 'Demo fee approved and recorded separately from custody.');
   } else if (!existingAttempt) {
     await env.DB.prepare(`INSERT OR IGNORE INTO payment_attempts (run_id, idempotency_key, payment_id, outcome, attempted_at) VALUES (?, ?, ?, 'PAID_REPLAYED', ?)`).bind(runId, idempotencyKey, payment.paymentId, new Date().toISOString()).run();
   }
@@ -426,7 +426,7 @@ async function processPackage(runId: string) {
   await env.DB.prepare(`UPDATE processing_jobs SET state = 'RUNNING', attempt_count = attempt_count + 1, locked_at = ?, last_error_code = NULL WHERE run_id = ? AND job_id = ?`).bind(now, runId, job.jobId).run();
   await appendUniqueEvent(runId, 'PROCESSING', 'DARJ processor', 'Deterministic processing checks started.');
   await env.DB.prepare(`UPDATE processing_jobs SET state = 'ACCEPTED', locked_at = NULL WHERE run_id = ? AND job_id = ?`).bind(runId, job.jobId).run();
-  await appendUniqueEvent(runId, 'ACCEPTED', 'DARJ processor', 'Synthetic package accepted by the prototype processor. This is not MCA acceptance.');
+  await appendUniqueEvent(runId, 'ACCEPTED', 'DARJ processor', 'Demo package accepted by the prototype processor. This is not MCA21 acceptance.');
   return securedJson({ processingState: 'ACCEPTED' });
 }
 
@@ -437,7 +437,7 @@ async function setRecoveryFlag(runId: string, body: JsonBody) {
   else if (flag === 'payment') await env.DB.prepare('UPDATE demo_runs SET lose_payment = 1 WHERE run_id = ?').bind(runId).run();
   else if (flag === 'expire_session') await env.DB.prepare('UPDATE demo_runs SET expires_at = ? WHERE run_id = ?').bind(new Date(Date.now() - 1_000).toISOString(), runId).run();
   else if (flag === 'transaction_failure' || flag === 'serialization_once') await env.DB.prepare(`INSERT INTO fault_injections (run_id, flag, remaining) VALUES (?, ?, 1) ON CONFLICT(run_id, flag) DO UPDATE SET remaining = 1`).bind(runId, flag).run();
-  else return errorResponse('DARJ_UNKNOWN_RESPONSE', 'DEMO_CONTROL', 'That synthetic control is not available in P0.', false, 400);
+  else return errorResponse('DARJ_UNKNOWN_RESPONSE', 'DEMO_CONTROL', 'That demo control is not available in P0.', false, 400);
   return securedJson({ ok: true });
 }
 
@@ -469,12 +469,12 @@ async function handleUpload(request: Request, runId: string) {
   const file = form.get('file');
   const slot = String(form.get('slot') ?? '');
   const clientSha256 = String(form.get('clientSha256') ?? '');
-  if (!(file instanceof File)) return errorResponse('DARJ_ATTACHMENT_UPLOAD_INCOMPLETE', 'UPLOAD', 'Choose a synthetic PDF to continue.', true, 400);
-  if (!ALLOWED_SLOTS.has(slot)) return errorResponse('DARJ_ATTACHMENT_UPLOAD_INCOMPLETE', 'UPLOAD', 'Choose one of the three synthetic attachment slots.', false, 400);
-  if (!file.name.startsWith('SYN-') || file.type !== 'application/pdf' || !file.name.toLowerCase().endsWith('.pdf')) return errorResponse('DARJ_ATTACHMENT_TYPE_UNSUPPORTED', 'UPLOAD', 'Only clearly named synthetic PDF files are accepted in this prototype.', true, 415);
-  if (file.size > MAX_SYNTHETIC_PDF_BYTES) return errorResponse('DARJ_ATTACHMENT_UPLOAD_INCOMPLETE', 'UPLOAD', 'This file exceeds DARJ’s 5 MB synthetic-demo limit.', true, 413);
+  if (!(file instanceof File)) return errorResponse('DARJ_ATTACHMENT_UPLOAD_INCOMPLETE', 'UPLOAD', 'Choose a demo PDF to continue.', true, 400);
+  if (!ALLOWED_SLOTS.has(slot)) return errorResponse('DARJ_ATTACHMENT_UPLOAD_INCOMPLETE', 'UPLOAD', 'Choose one of the three demo attachment slots.', false, 400);
+  if (!file.name.startsWith('DARJ-') || file.type !== 'application/pdf' || !file.name.toLowerCase().endsWith('.pdf')) return errorResponse('DARJ_ATTACHMENT_TYPE_UNSUPPORTED', 'UPLOAD', 'Only demo PDF files with names starting DARJ are accepted.', true, 415);
+  if (file.size > MAX_DEMO_PDF_BYTES) return errorResponse('DARJ_ATTACHMENT_UPLOAD_INCOMPLETE', 'UPLOAD', 'This file exceeds DARJ’s 5 MB demo limit.', true, 413);
   const bytes = new Uint8Array(await file.arrayBuffer());
-  if (!sniffSyntheticPdf(bytes)) return errorResponse('DARJ_ATTACHMENT_TYPE_UNSUPPORTED', 'UPLOAD', 'The stored bytes are not a complete PDF document.', true, 415);
+  if (!sniffDemoPdf(bytes)) return errorResponse('DARJ_ATTACHMENT_TYPE_UNSUPPORTED', 'UPLOAD', 'The stored bytes are not a complete PDF document.', true, 415);
   const hash = await sha256Hex(bytes);
   if (!/^[a-f0-9]{64}$/u.test(clientSha256) || clientSha256 !== hash) return errorResponse('DARJ_ATTACHMENT_HASH_MISMATCH', 'UPLOAD', 'The stored file does not match the file selected in the browser.', true, 409, { expected: { sha256: clientSha256 }, actual: { sha256: hash }, documentSlot: slot });
   const objectKey = `demo/${runId}/${CASE_ID}/${slot}-${crypto.randomUUID()}.pdf`;
@@ -487,13 +487,13 @@ async function handleUpload(request: Request, runId: string) {
 
 async function verifyAttachments(runId: string): Promise<AttachmentRow[]> {
   const attachments = await getAttachments(runId);
-  if (attachments.length !== 3) throw new Error('DARJ_ATTACHMENT_UPLOAD_INCOMPLETE|All three synthetic PDF slots must be complete before sealing.');
+  if (attachments.length !== 3) throw new Error('DARJ_ATTACHMENT_UPLOAD_INCOMPLETE|All three demo PDF slots must be complete before sealing.');
   for (const attachment of attachments) {
     const object = await env.FILES.get(attachment.objectKey);
     if (!object) throw new Error('DARJ_ATTACHMENT_UPLOAD_INCOMPLETE|A stored attachment is unavailable. Upload it again; form values are unchanged.');
     const bytes = new Uint8Array(await object.arrayBuffer());
     const serverHash = await sha256Hex(bytes);
-    if (!sniffSyntheticPdf(bytes) || bytes.byteLength !== attachment.bytes || serverHash !== attachment.sha256) throw new Error('DARJ_ATTACHMENT_HASH_MISMATCH|A stored attachment failed authoritative server verification.');
+    if (!sniffDemoPdf(bytes) || bytes.byteLength !== attachment.bytes || serverHash !== attachment.sha256) throw new Error('DARJ_ATTACHMENT_HASH_MISMATCH|A stored attachment failed authoritative server verification.');
   }
   return attachments;
 }
@@ -518,7 +518,7 @@ async function getState(runId: string) {
   const packageRow = await latestPackage(runId);
   const packageCurrent = packageRow ? await isPackageCurrent(runId, packageRow) : false;
   const signature = packageRow ? await env.DB.prepare('SELECT * FROM synthetic_signatures WHERE run_id = ? AND package_id = ?').bind(runId, packageRow.package_id).first() : null;
-  const signatureValid = Boolean(signature && packageCurrent && signature.provider === 'SYNTHETIC_ED25519' && signature.signed_hash === packageRow?.package_hash && await verifyPackageSignature(String(packageRow?.package_hash), String(signature.signature_value)));
+  const signatureValid = Boolean(signature && packageCurrent && signature.provider === 'DARJ_DEMO_ED25519' && signature.signed_hash === packageRow?.package_hash && await verifyPackageSignature(String(packageRow?.package_hash), String(signature.signature_value)));
   const receipt = packageRow ? await getReceiptForPackage(runId, String(packageRow.package_id)) : null;
   const payment = await getPayment(runId);
   const run = await getRun(runId);
@@ -587,8 +587,8 @@ function domainError(caught: unknown) {
   const message = caught instanceof Error ? caught.message : 'Unknown server error';
   if (!message.startsWith('DARJ_')) return errorResponse('DARJ_UNKNOWN_RESPONSE', 'UNKNOWN', 'DARJ could not reliably interpret this response. No correction has been suggested. Your saved work is unchanged.', false, 500);
   const [code, summary] = message.split('|');
-  const retryable = !['DARJ_IDEMPOTENCY_KEY_REUSED', 'DARJ_PACKAGE_HASH_MISMATCH', 'DARJ_SIGNATURE_INVALID', 'DARJ_SYNTHETIC_DATA_REQUIRED', 'DARJ_JAANCH_FAILED'].includes(code);
-  const stage = code.includes('DRAFT') || code.includes('SYNTHETIC_DATA') ? 'DRAFT' : code.includes('JAANCH') ? 'JAANCH' : code.includes('PAYMENT') ? 'PAYMENT' : code.includes('PROCESSING') ? 'PROCESSING' : 'SUBMISSION';
+  const retryable = !['DARJ_IDEMPOTENCY_KEY_REUSED', 'DARJ_PACKAGE_HASH_MISMATCH', 'DARJ_SIGNATURE_INVALID', 'DARJ_DEMO_DATA_REQUIRED', 'DARJ_JAANCH_FAILED'].includes(code);
+  const stage = code.includes('DRAFT') || code.includes('DEMO_DATA') ? 'DRAFT' : code.includes('JAANCH') ? 'JAANCH' : code.includes('PAYMENT') ? 'PAYMENT' : code.includes('PROCESSING') ? 'PROCESSING' : 'SUBMISSION';
   const status = code === 'DARJ_SUBMISSION_RETRY_SAFE' ? 503 : code === 'DARJ_AUTH_REQUIRED' ? 401 : 409;
   return errorResponse(code, stage, summary ?? 'The requested operation could not be completed.', retryable, status);
 }

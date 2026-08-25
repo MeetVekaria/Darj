@@ -6,7 +6,7 @@
 - Uniqueness and lineage of a Rasid.
 - Isolation of each reviewer’s demo run.
 - Durability of server draft versions, payment state and processing events.
-- Synthetic-only boundary: no real identifiers, credentials, payments or government traffic.
+- Demo-only boundary: no real identifiers, credentials, payments or government traffic.
 
 ## Trust boundaries
 
@@ -26,7 +26,7 @@
 | Package mutation | Canonical package/hash are append-only; WebCrypto Ed25519 verifies the exact signed hash before custody |
 | Silent draft overwrite | Base-version comparison and immutable draft rows |
 | Real sensitive data entered | Server rejects Aadhaar-like, PAN-like and valid-looking CIN patterns |
-| Malicious file | 5 MB limit; synthetic filename; PDF MIME/extension/header/EOF checks; client/server hash match; stored-byte re-verification; no trusted HTML renderer |
+| Malicious file | 5 MB limit; demo filename; PDF MIME/extension/header/EOF checks; client/server hash match; stored-byte re-verification; no trusted HTML renderer |
 | Cross-site mutation | Same-origin enforcement, double-submit CSRF token and SameSite Strict cookies |
 | Login/control abuse | D1-backed hashed rate-limit keys and isolated run-scoped controls |
 | UI embedding/content injection | CSP, `frame-ancestors 'none'`, X-Frame-Options DENY and no user HTML rendering |
@@ -35,8 +35,8 @@
 
 ## Known prototype limitations
 
-- The fixed Ed25519 demo key is deliberately synthetic and is not production key custody, a DSC, PKI or certificate validation.
+- The fixed Ed25519 demo key is not production key custody, a DSC, PKI or certificate validation.
 - D1 batch atomicity, constraints and the P0 rollback/concurrency tests demonstrate the prototype custody invariant; production still requires database-specific load, failover and operational testing.
 - The SSE stream and polling fallback are run-scoped prototype transports, not a production notification service.
-- Authentication uses fixed published synthetic credentials and an isolated 24-hour run. It is not identity proofing, MFA or production authorization.
+- Authentication uses fixed published demo credentials and an isolated 24-hour run. It is not identity proofing, MFA or production authorization.
 - R2 upload verification uses trusted server hashing and metadata, but no antivirus/CDR pipeline is included.

@@ -13,10 +13,10 @@ Status reflects the deployed code path, not the existence of a visual control.
 | P0-3 | Verified attachment storage | Complete | R2 seed and replacement upload; filename/MIME/PDF bytes/EOF/size/client+server SHA-256 checks |
 | P0-4 | Deterministic Jaanch | Complete | 43 server results; issue deep-links to board-meeting field |
 | P0-5 | Immutable Mohar | Complete | Canonical payload, manifest and SHA-256 stored append-only |
-| P0-6 | Synthetic package-bound signing | Complete | WebCrypto Ed25519 sign/verify over the exact package hash; explicitly not a DSC |
+| P0-6 | Demo package-bound signing | Complete | WebCrypto Ed25519 sign/verify over the exact package hash; explicitly not a DSC |
 | P0-7 | Idempotent submission | Complete | Persisted key, request fingerprint, replay, concurrency convergence and serialization retry |
 | P0-8 | Durable Rasid | Complete | Atomic D1 batch, receipt-to-custody foreign key and unique package constraints |
-| P0-9 | Synthetic payment reconciliation | Complete | Lost callback reconciles to PAID without second payment |
+| P0-9 | Demo payment reconciliation | Complete | Lost callback reconciles to PAID without second payment |
 | P0-10 | Processing outage recovery | Complete | Durable job row, ordered events, pause/resume, SSE and polling fallback |
 | P0-11 | Structured errors | Complete | `DARJ_*` envelope with stage, retryability and correlation ID |
 | P0-12 | Mobile and accessibility | Complete | 360 px journey, no horizontal overflow and Axe WCAG 2 A/AA route sweep |
@@ -38,7 +38,7 @@ Status reflects the deployed code path, not the existence of a visual control.
 ## Invariants checked in this build
 
 - Stable canonical hash across key order; mutation changes hash.
-- Synthetic handle accepted; PAN/Aadhaar/CIN-like patterns rejected.
+- Demo handle accepted; PAN/Aadhaar/CIN-like patterns rejected.
 - Same idempotency key and fingerprint returns the exact same receipt.
 - Concurrent different-key submissions for the same package converge on one receipt.
 - An injected pre-commit failure leaves no receipt; an injected serialization conflict retries safely.
@@ -49,7 +49,7 @@ Status reflects the deployed code path, not the existence of a visual control.
 - Ed25519 verification fails after package-hash tampering.
 - Missing CSRF is rejected without changing the draft.
 
-## Verification snapshot · 24 August 2026
+## Verification snapshot, 25 August 2026
 
 - TypeScript strict check: pass.
 - ESLint: pass.

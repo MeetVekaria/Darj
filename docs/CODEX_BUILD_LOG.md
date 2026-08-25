@@ -12,8 +12,8 @@
 
 - Scaffolded the pinned OpenAI Sites project with D1, R2 and authentication-ready add-ons.
 - Designed and implemented the full responsive DARJ interface and state-separated filing journey.
-- Implemented D1/R2 synthetic backend state, server draft versions, R2 seed documents, deterministic checks, canonical package hashing, signing adapter, idempotent custody, Rasid, payment reconciliation and processing events.
-- Added schema/migration files, canonicalisation and synthetic-boundary tests, documentation, print styling and disclosure/evidence/limitations views.
+- Implemented D1/R2 demo backend state, server draft versions, R2 seed documents, deterministic checks, canonical package hashing, signing adapter, idempotent custody, Rasid, payment reconciliation and processing events.
+- Added schema/migration files, canonicalisation and demo-boundary tests, documentation, print styling and disclosure/evidence/limitations views.
 - Generated one DARJ-specific social preview card with the built-in image generation workflow and manually inspected the text and prohibited-imagery constraints before integration.
 
 ### Manual judgment and corrections
@@ -40,7 +40,7 @@
 - Re-audited the product against the full P0 release gate after the repository was initialised and pushed by the user.
 - Added Dexie/IndexedDB local recovery, offline-to-online sync, session-expiry recovery, field conflicts, validated JSON export/import and storage-failure blocking.
 - Added P0 replacement upload with stored-byte PDF sniffing and client/server SHA-256 agreement.
-- Replaced the signing placeholder with package-bound WebCrypto Ed25519 sign/verify behavior using a fixed synthetic demo key.
+- Replaced the signing placeholder with package-bound WebCrypto Ed25519 sign/verify behavior using a fixed demo key.
 - Added durable processing-job state, run-scoped SSE with polling fallback, atomic receipt referential integrity, payment attempt idempotency, rollback/serialization controls, CSRF/origin checks, rate limiting and response security headers.
 - Added direct routes for every P0 view plus hidden authenticated demo controls.
 
@@ -50,3 +50,18 @@
 - Playwright desktop/mobile matrix: 11 passed and 9 intentional cross-project skips.
 - Verified the primary ACCEPTED journey, two-session isolation, browser interruption, conflict resolution, session expiry, upload/edit-after-sign v24 behavior, transaction rollback, serialization retry, concurrent submission convergence, security boundaries, Axe route coverage and 360 px overflow.
 - TypeScript, ESLint and the production Vinext build pass.
+
+## 25 August 2026
+
+### MCA21 recognition and demo identity
+
+- Made the MCA21 statutory filing context visible on login, the filing register, Rasid, evidence, limitations, metadata and README while preserving the independent prototype boundary.
+- Replaced the prior demo persona with Meet Vekaria and `meet@darj.demo`.
+- Removed repetitive demo qualifiers, replaced older placeholder identifiers, and simplified punctuation in product copy.
+- Reworked the evidence register so MCA and PIB filing data, Lok Sabha filing counts, and ICSI representations to MCA are explicit at a glance.
+- Generated and inspected a new 1200 by 630 MCA21 filing reliability social preview.
+
+### Release verification
+
+- TypeScript strict check, ESLint, eight Node invariant/security tests and the production Vinext build pass.
+- Playwright P0 matrix: 11 passed and 9 intentional cross-project skips, including the primary journey, recovery, security, accessibility and mobile overflow coverage.
