@@ -650,8 +650,7 @@ function LoginScreen({ hydrated, busy, onEnter, onLimitations, error, sessionExp
         <Wordmark />
         <div className="login-header-meta" aria-label="Prototype context">
           <span>Filing reliability</span>
-          <span>Round 1 build</span>
-          <span>28 Aug 2026</span>
+          <span>Version 1.0</span>
         </div>
       </header>
 
@@ -728,7 +727,7 @@ function FilingsScreen({ state, onPrepare, onRecovery }: { state: AppState; onPr
           <span data-label="Folio" className="mono">01 / A</span>
           <span data-label="Company"><strong>Aster Components Private Limited</strong><small>Demo company record 000117</small></span>
           <span data-label="Form / FY"><strong>AOC-4 prototype</strong><small>FY 2025-26</small></span>
-          <span data-label="Due state"><strong>Due today</strong><small>28 Aug 2026 · 11:59 PM IST</small></span>
+          <span data-label="Due state"><strong>Deadline scenario</strong><small>Time-critical demo filing</small></span>
           <span data-label="Record state"><Status label={journeyLabel(state)} tone={state.receipt ? 'durable' : 'progress'} /><small>Draft v{state.draft?.version ?? 17} · {state.attachments.length} verified PDFs</small></span>
           <span data-label="Action"><button className="primary small" onClick={onPrepare}>{state.receipt ? 'View record' : 'Continue filing'} <span aria-hidden="true">→</span></button></span>
         </div>
