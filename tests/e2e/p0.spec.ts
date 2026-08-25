@@ -5,7 +5,7 @@ async function login(page: Page) {
   await page.goto('/login');
   await page.getByRole('button', { name: /Enter Meet’s filing/i }).click();
   await expect(page).toHaveURL(/\/filings$/);
-  await expect(page.getByRole('heading', { name: /Two cases/i })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /filing is/i })).toBeVisible();
 }
 
 async function apiPost(page: Page, action: string, data: Record<string, unknown> = {}) {
@@ -36,7 +36,7 @@ async function fixAndCheck(page: Page) {
 async function sealAndSign(page: Page) {
   await page.getByRole('button', { name: /Create Mohar/i }).click();
   await expect(page.getByRole('heading', { name: /immutable package is ready/i })).toBeVisible();
-  await page.getByRole('button', { name: /Continue to demo signing/i }).click();
+  await page.getByRole('button', { name: /Continue to test signing/i }).click();
   await expect(page.getByText('SIGNED · VERIFIED')).toBeVisible();
   await expect(page.getByText('Ed25519 verification passed')).toBeVisible();
 }
@@ -88,11 +88,14 @@ test('two same-credential reviewer sessions remain isolated', async ({ browser }
     ]) as [{ draft: { form: { boardMeetings: string } } }, { draft: { form: { boardMeetings: string } } }];
     expect(afterA.draft.form.boardMeetings).toBe('5');
     expect(afterB.draft.form.boardMeetings).toBe('6');
-    await pageA.getByRole('button', { name: /Reset this demo run/i }).click();
+    await pageA.getByRole('button', { name: /Reset review workspace/i }).first().click();
     const untouchedB = await pageB.evaluate(() => fetch('/api/darj').then((response) => response.json())) as { draft: { form: { boardMeetings: string } } };
     expect(untouchedB.draft.form.boardMeetings).toBe('6');
   } finally {
-    await contextA.close(); await contextB.close();
+    await Promise.race([
+      Promise.allSettled([contextA.close(), contextB.close()]),
+      new Promise((resolve) => setTimeout(resolve, 2_000)),
+    ]);
   }
 });
 
@@ -122,7 +125,7 @@ test('stale server draft shows a field-level conflict and explicit choice', asyn
   try {
     await login(first);
     await stale.goto('/filings');
-    await expect(stale.getByRole('heading', { name: /Two cases/i })).toBeVisible();
+    await expect(stale.getByRole('heading', { name: /filing is/i })).toBeVisible();
     await Promise.all([openPrepare(first), openPrepare(stale)]);
     await first.getByLabel('Board meetings').fill('5');
     await expect(first.getByText('Saved locally · Synced').first()).toBeVisible();
@@ -164,7 +167,7 @@ test('P0 upload verifies stored PDF and edit after signing creates v24', async (
   await page.getByRole('button', { name: /Run Jaanch/i }).click();
   await page.getByRole('button', { name: /Create Mohar/i }).click();
   await expect(page.getByText('DARJ-PKG-000024 · v24')).toBeVisible();
-  await page.getByRole('button', { name: /Continue to demo signing/i }).click();
+  await page.getByRole('button', { name: /Continue to test signing/i }).click();
   await expect(page.getByText('SIGNED · VERIFIED')).toBeVisible();
 });
 
@@ -247,7 +250,13 @@ test('mobile journey has no horizontal overflow', async ({ page }, testInfo) => 
   await login(page); await openPrepare(page);
   for (const path of ['/filings', '/services', '/company', '/documents', '/payments', '/filings/DARJ-DEMO-AOC4-01/prepare']) {
     await page.goto(path);
-    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
-    expect(overflow, path).toBeLessThanOrEqual(1);
+    const overflow = await page.evaluate(() => ({
+      pixels: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      offenders: Array.from(document.querySelectorAll<HTMLElement>('body *')).filter((element) => {
+        const rect = element.getBoundingClientRect();
+        return rect.right > document.documentElement.clientWidth + 1 || rect.left < -1;
+      }).slice(0, 8).map((element) => `${element.tagName.toLowerCase()}.${element.className}`),
+    }));
+    expect(overflow.pixels, `${path}: ${overflow.offenders.join(', ')}`).toBeLessThanOrEqual(1);
   }
 });

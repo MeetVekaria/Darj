@@ -25,7 +25,7 @@ async function completeAcceptedV23(page: Page) {
   await expect(page.getByText('Saved locally · Synced').first()).toBeVisible();
   await page.getByRole('button', { name: /Run Jaanch/i }).click();
   await page.getByRole('button', { name: /Create Mohar/i }).click();
-  await page.getByRole('button', { name: /Continue to demo signing/i }).click();
+  await page.getByRole('button', { name: /Continue to test signing/i }).click();
   await page.getByRole('button', { name: /Submit exact package/i }).click();
   await page.getByRole('button', { name: /Approve simulated payment/i }).click();
   await expect(page.getByText('PAID · RECONCILED', { exact: true })).toBeVisible();
@@ -102,7 +102,7 @@ test('P1 correction creates linked v24 and leaves accepted v23 unchanged', async
   expect(after.lineage[0].changedPaths).toEqual(['attachments.boardReport']);
   expect(before.package.canonicalPayload).toContain('DARJ-PKG-000023');
   await page.getByRole('button', { name: /Open v24 Mohar/i }).click();
-  await page.getByRole('button', { name: /Continue to demo signing/i }).click();
+  await page.getByRole('button', { name: /Continue to test signing/i }).click();
   await page.getByRole('button', { name: /Submit exact package/i }).click();
   await expect(page.getByText('DARJ-RASID-0024').first()).toBeVisible();
 });

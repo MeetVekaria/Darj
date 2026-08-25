@@ -21,6 +21,14 @@ const FEATURE_DEFAULTS = {
   recoveryCase: true,
 };
 
+const STARTABLE_SERVICES = {
+  'AOC-4': 'Financial statements',
+  'MGT-7': 'Annual return',
+  'DIR-3 KYC': 'Director KYC',
+  'DIR-12': 'Director or key managerial change',
+  'CHG-1': 'Create or modify a charge',
+} as const;
+
 function featureFlags() {
   const bindings = env as unknown as Record<string, unknown>;
   const enabled = (name: string, fallback: boolean) => bindings[name] === undefined ? fallback : String(bindings[name]).toLowerCase() !== 'false';
@@ -54,6 +62,12 @@ const SCHEMA = [
     run_id TEXT NOT NULL, case_id TEXT NOT NULL, version INTEGER NOT NULL,
     base_version INTEGER, form_json TEXT NOT NULL, changed_paths TEXT NOT NULL,
     saved_at TEXT NOT NULL, PRIMARY KEY (run_id, case_id, version)
+  )`,
+  `CREATE TABLE IF NOT EXISTS service_drafts (
+    run_id TEXT NOT NULL, filing_id TEXT NOT NULL, form_code TEXT NOT NULL,
+    title TEXT NOT NULL, financial_year TEXT NOT NULL, applicant_name TEXT NOT NULL,
+    note TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, filing_id)
   )`,
   `CREATE TABLE IF NOT EXISTS attachments (
     run_id TEXT NOT NULL, case_id TEXT NOT NULL, slot TEXT NOT NULL,
@@ -149,6 +163,7 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS idx_events_case ON case_events(run_id, case_id, seq)`,
   `CREATE INDEX IF NOT EXISTS idx_jobs_state ON processing_jobs(run_id, state, available_at)`,
   `CREATE INDEX IF NOT EXISTS idx_upload_slot ON upload_sessions(run_id, case_id, slot, state)`,
+  `CREATE INDEX IF NOT EXISTS idx_service_drafts_run_updated ON service_drafts(run_id, updated_at DESC)`,
 ];
 
 type FormDataShape = typeof INITIAL_FORM;
@@ -164,8 +179,8 @@ type ValidationCheck = {
 export async function GET(request: Request) {
   await initializeDatabase();
   const runId = readRunId(request);
-  if (!runId) return errorResponse('DARJ_AUTH_REQUIRED', 'LOGIN', 'Enter the DARJ demo to continue.', false, 401);
-  if (!(await getRun(runId))) return errorResponse('DARJ_AUTH_REQUIRED', 'LOGIN', 'This demo session has expired. Your local draft is unchanged.', true, 401);
+  if (!runId) return errorResponse('DARJ_AUTH_REQUIRED', 'LOGIN', 'Enter the DARJ workspace to continue.', false, 401);
+  if (!(await getRun(runId))) return errorResponse('DARJ_AUTH_REQUIRED', 'LOGIN', 'This review session has expired. Your local draft is unchanged.', true, 401);
   return securedJson(await getState(runId));
 }
 
@@ -190,6 +205,7 @@ export async function POST(request: Request) {
   try {
     switch (action) {
       case 'saveDraft': return await saveDraft(runId, body);
+      case 'startService': return await startService(runId, body);
       case 'jaanch': return await runJaanch(runId);
       case 'seal': return await sealPackage(runId);
       case 'sign': return await signPackage(runId);
@@ -231,19 +247,19 @@ async function initializeDatabase() {
 
 async function authorizeMutation(request: Request, stage: string): Promise<string | NextResponse> {
   const runId = readRunId(request);
-  if (!runId || !(await getRun(runId))) return errorResponse('DARJ_AUTH_REQUIRED', 'LOGIN', 'Re-enter the DARJ demo. Your local draft is unchanged.', true, 401);
+  if (!runId || !(await getRun(runId))) return errorResponse('DARJ_AUTH_REQUIRED', 'LOGIN', 'Re-enter the DARJ workspace. Your local draft is unchanged.', true, 401);
   const requestOrigin = request.headers.get('origin');
   if (requestOrigin && requestOrigin !== new URL(request.url).origin) return errorResponse('DARJ_AUTH_REQUIRED', stage, 'The request origin could not be verified.', false, 403);
   const csrfHeader = request.headers.get('x-darj-csrf');
   const csrfCookie = readCookie(request, CSRF_COOKIE_NAME);
-  if (!csrfHeader || !csrfCookie || csrfHeader !== csrfCookie) return errorResponse('DARJ_AUTH_REQUIRED', stage, 'The secure demo request token is missing or expired. Re-enter the demo.', false, 403);
+  if (!csrfHeader || !csrfCookie || csrfHeader !== csrfCookie) return errorResponse('DARJ_AUTH_REQUIRED', stage, 'The secure request token is missing or expired. Re-enter the workspace.', false, 403);
   return runId;
 }
 
 async function login(body: JsonBody, request: Request) {
   const clientKey = request.headers.get('cf-connecting-ip') ?? request.headers.get('x-forwarded-for') ?? 'local';
-  if (!(await consumeRateLimit(`login:${clientKey}`, 60, 60_000))) return errorResponse('DARJ_AUTH_REQUIRED', 'LOGIN', 'Too many demo login attempts. Wait one minute and try again.', true, 429);
-  if (body.email !== DEMO_EMAIL || body.password !== DEMO_PASSWORD) return errorResponse('DARJ_AUTH_REQUIRED', 'LOGIN', 'Use the demo credentials shown on this page.', true, 401);
+  if (!(await consumeRateLimit(`login:${clientKey}`, 60, 60_000))) return errorResponse('DARJ_AUTH_REQUIRED', 'LOGIN', 'Too many login attempts. Wait one minute and try again.', true, 429);
+  if (body.email !== DEMO_EMAIL || body.password !== DEMO_PASSWORD) return errorResponse('DARJ_AUTH_REQUIRED', 'LOGIN', 'Use the credentials shown on this page.', true, 401);
   const runId = `run-${crypto.randomUUID()}`;
   const csrfToken = crypto.randomUUID();
   const now = new Date();
@@ -297,7 +313,7 @@ async function seedRun(runId: string) {
     env.DB.prepare(`INSERT INTO draft_snapshots (run_id, case_id, version, base_version, form_json, changed_paths, saved_at) VALUES (?, ?, 17, 16, ?, ?, ?)`)
       .bind(runId, CASE_ID, JSON.stringify(INITIAL_FORM), JSON.stringify([]), savedAt),
     env.DB.prepare(`INSERT INTO case_master_state (run_id, case_id, pinned_version, pinned_office, current_version, current_office, source, review_state)
-      VALUES (?, ?, 7, ?, 7, ?, 'Demo company master', 'CURRENT')`)
+      VALUES (?, ?, 7, ?, 7, ?, 'Sample company master', 'CURRENT')`)
       .bind(runId, CASE_ID, INITIAL_FORM.registeredOffice, INITIAL_FORM.registeredOffice),
     ...documents.map((document) => env.DB.prepare(`INSERT INTO attachments (run_id, case_id, slot, filename, object_key, bytes, mime, sha256, verified_at) VALUES (?, ?, ?, ?, ?, ?, 'application/pdf', ?, ?)`)
       .bind(runId, CASE_ID, document.slot, document.filename, document.objectKey, document.bytes.byteLength, document.hash, savedAt)),
@@ -324,8 +340,29 @@ async function saveDraft(runId: string, body: JsonBody) {
   const savedAt = new Date().toISOString();
   await env.DB.prepare(`INSERT INTO draft_snapshots (run_id, case_id, version, base_version, form_json, changed_paths, saved_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
     .bind(runId, CASE_ID, nextVersion, baseVersion, JSON.stringify(form), JSON.stringify(changedPaths), savedAt).run();
-  if (changedPaths.length > 0 && await latestPackage(runId)) await appendUniqueEvent(runId, 'SIGNATURE_INVALID', 'DARJ', 'A later draft changed the package input. The prior demo signature cannot sign the new version.');
+  if (changedPaths.length > 0 && await latestPackage(runId)) await appendUniqueEvent(runId, 'SIGNATURE_INVALID', 'DARJ', 'A later draft changed the package input. The prior test signature cannot sign the new version.');
   return securedJson({ version: nextVersion, savedAt, changedPaths });
+}
+
+async function startService(runId: string, body: JsonBody) {
+  const formCode = typeof body.formCode === 'string' ? body.formCode.trim() : '';
+  const title = STARTABLE_SERVICES[formCode as keyof typeof STARTABLE_SERVICES];
+  const financialYear = typeof body.financialYear === 'string' ? body.financialYear.trim() : '';
+  const applicantName = typeof body.applicantName === 'string' ? body.applicantName.trim() : '';
+  const note = typeof body.note === 'string' ? body.note.trim() : '';
+  if (!title || !/^20\d{2}-\d{2}$/u.test(financialYear) || applicantName.length < 2 || applicantName.length > 80 || note.length > 300) {
+    return errorResponse('DARJ_SERVICE_START_INVALID', 'DRAFT', 'Check the service, financial year and contact name before creating this filing.', true, 400);
+  }
+  if (containsRealLookingSensitiveIdentifier({ applicantName, note })) {
+    return errorResponse('DARJ_DEMO_DATA_REQUIRED', 'DRAFT', 'Use generated review details rather than real PAN, Aadhaar or CIN values.', false, 400);
+  }
+  const filingId = `DARJ-${formCode.replaceAll(/[^A-Z0-9]+/gu, '-')}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+  const now = new Date().toISOString();
+  const status = formCode === 'AOC-4' ? 'READY_FOR_AOC4' : 'INTAKE_SAVED';
+  await env.DB.prepare(`INSERT INTO service_drafts (run_id, filing_id, form_code, title, financial_year, applicant_name, note, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(runId, filingId, formCode, title, financialYear, applicantName, note, status, now, now).run();
+  return securedJson({ filing: { filingId, formCode, title, financialYear, applicantName, note, status, createdAt: now, updatedAt: now } });
 }
 
 function isValidForm(value: FormDataShape): boolean { return Object.keys(INITIAL_FORM).every((key) => typeof value[key as keyof FormDataShape] === 'string'); }
@@ -340,17 +377,17 @@ async function runJaanch(runId: string) {
 function buildChecks(form: FormDataShape, master?: DatabaseRow | null): ValidationCheck[] {
   const checks: ValidationCheck[] = Array.from({ length: 43 }, (_, index) => ({
     code: `DARJ_CHECK_${String(index + 1).padStart(2, '0')}`, stage: 'JAANCH', fieldPath: null, documentSlot: null, blocking: false,
-    retryable: false, status: 'PASSED', summary: 'Deterministic prototype condition passed.', detail: 'Checked against the saved draft and verified attachment manifest.', ruleVersion: 'DARJ-RULES-1.1',
+    retryable: false, status: 'PASSED', summary: 'Deterministic filing condition passed.', detail: 'Checked against the saved draft and verified attachment manifest.', ruleVersion: 'DARJ-RULES-1.1',
   }));
   if (Number(form.boardMeetings) < 4) checks[16] = {
     ...checks[16], code: 'DARJ_BOARD_MEETING_COUNT', fieldPath: 'boardMeetings', blocking: true, retryable: true, status: 'NEEDS_ATTENTION',
     summary: 'The board meeting count is below this case’s expected value.',
-    detail: 'Update the count to 4 for this deterministic demo case. This is a DARJ prototype rule, not legal advice.', expected: '4', actual: form.boardMeetings,
+    detail: 'Update the count to 4 for this deterministic review case. This is a DARJ prototype rule, not legal advice.', expected: '4', actual: form.boardMeetings,
   };
   if (master && ['REVIEW_REQUIRED', 'PINNED_STOPPED'].includes(String(master.review_state))) checks[22] = {
     ...checks[22], code: 'DARJ_MASTER_DATA_DRIFT', fieldPath: 'registeredOffice', blocking: true, retryable: true, status: 'NEEDS_ATTENTION',
-    summary: 'The MCA21 demo company master changed after this draft was saved.',
-    detail: String(master.review_state) === 'PINNED_STOPPED' ? 'Meet chose to keep the pinned address, so this filing is stopped. Reset the demo run to start again.' : 'Review the old and current registered office values. DARJ will never replace the pinned value silently.',
+    summary: 'The MCA21 sample company master changed after this draft was saved.',
+    detail: String(master.review_state) === 'PINNED_STOPPED' ? 'Meet chose to keep the pinned address, so this filing is stopped. Reset the review workspace to start again.' : 'Review the old and current registered office values. DARJ will never replace the pinned value silently.',
     expected: String(master.current_office), actual: String(master.pinned_office),
   };
   return checks;
@@ -368,7 +405,7 @@ async function sealPackage(runId: string) {
   const version = existing ? Number(existing.version) + 1 : 23;
   const packageId = `DARJ-PKG-${String(version).padStart(6, '0')}`;
   const canonicalPayload = canonicalize({
-    hashVersion: 1, packageId, caseId: CASE_ID, packageVersion: version, formType: 'AOC-4 prototype', financialYear: '2025-26',
+    hashVersion: 1, packageId, caseId: CASE_ID, packageVersion: version, formType: 'AOC-4', financialYear: '2025-26',
     formSchemaVersion: 'DARJ-AOC4-1.0', ruleVersion: 'DARJ-RULES-1.1', masterSnapshotVersion: Number(master?.pinned_version ?? 7), formData: form, attachments: attachmentManifest(attachments),
   });
   const hash = await sha256Hex(new TextEncoder().encode(canonicalPayload));
@@ -389,7 +426,7 @@ async function signPackage(runId: string) {
   const signatureValue = await signPackageHash(String(packageRow.package_hash));
   await env.DB.prepare(`INSERT INTO synthetic_signatures (run_id, signature_id, package_id, provider, signed_hash, signature_value, signed_at) VALUES (?, ?, ?, 'DARJ_DEMO_ED25519', ?, ?, ?)`)
     .bind(runId, signatureId, packageRow.package_id, packageRow.package_hash, signatureValue, signedAt).run();
-  await appendEvent(runId, 'SIGNED', 'Meet, demo filer', 'Verified Ed25519 demo signature bound to the server confirmed package hash.');
+  await appendEvent(runId, 'SIGNED', 'Meet, test signer', 'Verified Ed25519 test signature bound to the server confirmed package hash.');
   return securedJson({ signatureId, packageId: String(packageRow.package_id), provider: 'DARJ_DEMO_ED25519', signedHash: String(packageRow.package_hash), signatureValue, signedAt, verified: true });
 }
 
@@ -430,7 +467,7 @@ async function submitPackage(runId: string, body: JsonBody) {
         env.DB.prepare(`INSERT INTO processing_jobs (run_id, job_id, custody_id, state, attempt_count, available_at) VALUES (?, ?, ?, 'WAITING_FOR_PAYMENT', 0, ?)`).bind(runId, jobId, custodyId, receivedAt),
         env.DB.prepare(`INSERT INTO submission_attempts (run_id, idempotency_key, request_fingerprint, package_id, receipt_id, outcome, attempted_at) VALUES (?, ?, ?, ?, ?, 'RECEIPT_CREATED', ?)`).bind(runId, idempotencyKey, fingerprint, packageId, receiptId, receivedAt),
       ]);
-      await appendEvent(runId, 'RECEIVED', 'DARJ custody gateway', 'Exact demo package committed to custody. No MCA21 filing has occurred.');
+      await appendEvent(runId, 'RECEIVED', 'DARJ custody gateway', 'Exact sample package committed to custody. No MCA21 filing has occurred.');
       const run = await getRun(runId);
       if (Number(run?.lose_submission) === 1) {
         await env.DB.prepare('UPDATE demo_runs SET lose_submission = 0 WHERE run_id = ?').bind(runId).run();
@@ -480,7 +517,7 @@ async function approvePayment(runId: string, body: JsonBody) {
       env.DB.prepare(`INSERT OR IGNORE INTO payment_attempts (run_id, idempotency_key, payment_id, outcome, attempted_at) VALUES (?, ?, ?, 'PAID', ?)`).bind(runId, idempotencyKey, payment.paymentId, now),
       env.DB.prepare(`UPDATE processing_jobs SET state = 'QUEUED', available_at = ? WHERE run_id = ? AND job_id = ?`).bind(now, runId, job?.jobId ?? ''),
     ]);
-    await appendUniqueEvent(runId, 'PAID', 'Demo payment simulator', 'Demo fee approved and recorded separately from custody.');
+    await appendUniqueEvent(runId, 'PAID', 'Demo payment simulator', 'Sample fee approved and recorded separately from custody.');
   } else if (!existingAttempt) {
     await env.DB.prepare(`INSERT OR IGNORE INTO payment_attempts (run_id, idempotency_key, payment_id, outcome, attempted_at) VALUES (?, ?, ?, 'PAID_REPLAYED', ?)`).bind(runId, idempotencyKey, payment.paymentId, new Date().toISOString()).run();
   }
@@ -493,12 +530,12 @@ async function approvePayment(runId: string, body: JsonBody) {
 }
 
 async function setProcessor(runId: string, paused: boolean) {
-  if (!(await consumeRateLimit(`controls:${runId}`, 30, 60_000))) return errorResponse('DARJ_PROCESSING_DELAYED', 'PROCESSING', 'Demo controls are temporarily rate limited.', true, 429);
+  if (!(await consumeRateLimit(`controls:${runId}`, 30, 60_000))) return errorResponse('DARJ_PROCESSING_DELAYED', 'PROCESSING', 'Recovery controls are temporarily rate limited.', true, 429);
   await env.DB.prepare('UPDATE demo_runs SET processor_paused = ? WHERE run_id = ?').bind(paused ? 1 : 0, runId).run();
   const job = await getProcessingJob(runId);
   if (job && job.state !== 'ACCEPTED') await env.DB.prepare('UPDATE processing_jobs SET state = ?, last_error_code = ? WHERE run_id = ? AND job_id = ?').bind(paused ? 'DELAYED' : 'QUEUED', paused ? 'DARJ_PROCESSING_DELAYED' : null, runId, job.jobId).run();
-  if (paused) await appendUniqueEvent(runId, 'PROCESSING_DELAYED', 'Demo processor', 'Processor paused. Custody and payment remain recorded; no resubmission is needed.');
-  else await appendUniqueEvent(runId, 'PROCESSING_RESUMED', 'Demo processor', 'Processor resumed from the durable queue.');
+  if (paused) await appendUniqueEvent(runId, 'PROCESSING_DELAYED', 'Review processor', 'Processor paused. Custody and payment remain recorded; no resubmission is needed.');
+  else await appendUniqueEvent(runId, 'PROCESSING_RESUMED', 'Review processor', 'Processor resumed from the durable queue.');
   return securedJson({ processorPaused: paused });
 }
 
@@ -514,7 +551,7 @@ async function processPackage(runId: string) {
   await env.DB.prepare(`UPDATE processing_jobs SET state = 'RUNNING', attempt_count = attempt_count + 1, locked_at = ?, last_error_code = NULL WHERE run_id = ? AND job_id = ?`).bind(now, runId, job.jobId).run();
   await appendUniqueEvent(runId, 'PROCESSING', 'DARJ processor', 'Deterministic processing checks started.');
   await env.DB.prepare(`UPDATE processing_jobs SET state = 'ACCEPTED', locked_at = NULL WHERE run_id = ? AND job_id = ?`).bind(runId, job.jobId).run();
-  await appendUniqueEvent(runId, 'ACCEPTED', 'DARJ processor', 'Demo package accepted by the prototype processor. This is not MCA21 acceptance.');
+  await appendUniqueEvent(runId, 'ACCEPTED', 'DARJ processor', 'Sample package accepted by the review processor. This is not MCA21 acceptance.');
   return securedJson({ processingState: 'ACCEPTED' });
 }
 
@@ -526,7 +563,7 @@ async function simulateMasterDrift(runId: string) {
     const detectedAt = new Date().toISOString();
     await env.DB.prepare(`UPDATE case_master_state SET current_version = 8, current_office = ?, review_state = 'REVIEW_REQUIRED', detected_at = ?, reviewed_at = NULL WHERE run_id = ? AND case_id = ?`)
       .bind('27, Riverfront Commerce Centre, Ahmedabad, Gujarat 380009', detectedAt, runId, CASE_ID).run();
-    await appendUniqueEvent(runId, 'MASTER_DRIFT_DETECTED', 'DARJ company master monitor', 'Registered office changed in the demo company master after the draft pinned snapshot 7. Sealing is blocked until Meet reviews it.');
+    await appendUniqueEvent(runId, 'MASTER_DRIFT_DETECTED', 'DARJ company master monitor', 'Registered office changed in the sample company master after the draft pinned snapshot 7. Sealing is blocked until Meet reviews it.');
   }
   return securedJson(await getState(runId));
 }
@@ -547,7 +584,7 @@ async function acceptMasterSnapshot(runId: string) {
     env.DB.prepare(`UPDATE case_master_state SET pinned_version = current_version, pinned_office = current_office, review_state = 'ACCEPTED', reviewed_at = ? WHERE run_id = ? AND case_id = ?`)
       .bind(reviewedAt, runId, CASE_ID),
   ]);
-  await appendEvent(runId, 'MASTER_DRIFT_ACCEPTED', 'Meet, demo filer', `Reviewed the registered-office change and pinned demo company master snapshot ${master.current_version}. A new draft version was created and affected Jaanch rules must rerun.`);
+  await appendEvent(runId, 'MASTER_DRIFT_ACCEPTED', 'Meet, test signer', `Reviewed the registered-office change and pinned sample company master snapshot ${master.current_version}. A new draft version was created and affected Jaanch rules must rerun.`);
   return securedJson(await getState(runId));
 }
 
@@ -557,7 +594,7 @@ async function keepPinnedMaster(runId: string) {
   if (!master || String(master.review_state) !== 'REVIEW_REQUIRED') throw new Error('DARJ_JAANCH_FAILED|There is no company master change waiting for review.');
   const reviewedAt = new Date().toISOString();
   await env.DB.prepare(`UPDATE case_master_state SET review_state = 'PINNED_STOPPED', reviewed_at = ? WHERE run_id = ? AND case_id = ?`).bind(reviewedAt, runId, CASE_ID).run();
-  await appendEvent(runId, 'MASTER_DRIFT_DECLINED', 'Meet, demo filer', 'Kept the pinned registered office. This filing is stopped and cannot be sealed.');
+  await appendEvent(runId, 'MASTER_DRIFT_DECLINED', 'Meet, test signer', 'Kept the pinned registered office. This filing is stopped and cannot be sealed.');
   return securedJson(await getState(runId));
 }
 
@@ -574,7 +611,7 @@ async function requestCorrection(runId: string) {
     await env.DB.prepare(`INSERT INTO correction_requests (run_id, request_id, case_id, source_package_id, document_slot, summary, state, created_at)
       VALUES (?, ?, ?, ?, 'boardReport', 'Return resubmission required for board report.', 'REQUIRED', ?)`)
       .bind(runId, requestId, CASE_ID, source.package_id, now).run();
-    await appendEvent(runId, 'RESUBMISSION_REQUIRED', 'DARJ demo processor', 'Return resubmission required for board report. Original package remains immutable.');
+    await appendEvent(runId, 'RESUBMISSION_REQUIRED', 'DARJ review processor', 'Return resubmission required for board report. Original package remains immutable.');
   }
   return securedJson(await getState(runId));
 }
@@ -609,7 +646,7 @@ async function createCorrectionPackage(runId: string) {
   const packageId = `DARJ-PKG-${String(version).padStart(6, '0')}`;
   const master = await getMasterStateRow(runId);
   const canonicalPayload = canonicalize({
-    hashVersion: 1, packageId, caseId: CASE_ID, packageVersion: version, formType: 'AOC-4 prototype', financialYear: '2025-26',
+    hashVersion: 1, packageId, caseId: CASE_ID, packageVersion: version, formType: 'AOC-4', financialYear: '2025-26',
     formSchemaVersion: 'DARJ-AOC4-1.0', ruleVersion: 'DARJ-RULES-1.1', masterSnapshotVersion: Number(master?.pinned_version ?? 7),
     correctionOf: String(source.package_id), correctionReason: String(request.summary), formData: form, attachments: attachmentManifest(attachments),
   });
@@ -622,12 +659,12 @@ async function createCorrectionPackage(runId: string) {
     env.DB.prepare(`UPDATE correction_requests SET state = 'COMPLETED', child_package_id = ?, resolved_at = ? WHERE run_id = ? AND request_id = ?`)
       .bind(packageId, now, runId, request.request_id),
   ]);
-  await appendEvent(runId, 'CORRECTION_SEALED', 'Meet, demo filer', `Created ${packageId} v${version} from immutable ${source.package_id} v${source.version}. Only the board report attachment changed.`);
+  await appendEvent(runId, 'CORRECTION_SEALED', 'Meet, test signer', `Created ${packageId} v${version} from immutable ${source.package_id} v${source.version}. Only the board report attachment changed.`);
   return securedJson(await getState(runId));
 }
 
 async function setRecoveryFlag(runId: string, body: JsonBody) {
-  if (!(await consumeRateLimit(`controls:${runId}`, 30, 60_000))) return errorResponse('DARJ_UNKNOWN_RESPONSE', 'DEMO_CONTROL', 'Demo controls are temporarily rate limited.', true, 429);
+  if (!(await consumeRateLimit(`controls:${runId}`, 30, 60_000))) return errorResponse('DARJ_UNKNOWN_RESPONSE', 'DEMO_CONTROL', 'Recovery controls are temporarily rate limited.', true, 429);
   const flag = body.flag;
   if (flag === 'submission') await env.DB.prepare('UPDATE demo_runs SET lose_submission = 1 WHERE run_id = ?').bind(runId).run();
   else if (flag === 'payment') await env.DB.prepare('UPDATE demo_runs SET lose_payment = 1 WHERE run_id = ?').bind(runId).run();
@@ -648,7 +685,7 @@ async function consumeFault(runId: string, flag: string): Promise<boolean> {
 }
 
 async function resetRun(runId: string) {
-  if (!(await consumeRateLimit(`controls:${runId}`, 30, 60_000))) return errorResponse('DARJ_UNKNOWN_RESPONSE', 'DEMO_CONTROL', 'Demo controls are temporarily rate limited.', true, 429);
+  if (!(await consumeRateLimit(`controls:${runId}`, 30, 60_000))) return errorResponse('DARJ_UNKNOWN_RESPONSE', 'DEMO_CONTROL', 'Recovery controls are temporarily rate limited.', true, 429);
   const partials = await env.DB.prepare(`SELECT object_key, provider_upload_id FROM upload_sessions WHERE run_id = ? AND state = 'UPLOADING'`).bind(runId).all();
   for (const partial of partials.results) {
     if (partial.provider_upload_id) {
@@ -662,7 +699,7 @@ async function resetRun(runId: string) {
     if (listed.objects.length) await env.FILES.delete(listed.objects.map((object) => object.key));
     cursor = listed.truncated ? listed.cursor : undefined;
   } while (cursor);
-  const tables = ['fault_injections', 'case_events', 'processing_jobs', 'payment_attempts', 'payment_events', 'payment_intents', 'submission_attempts', 'receipts', 'custody_submissions', 'synthetic_signatures', 'package_lineage', 'correction_requests', 'filing_packages', 'upload_sessions', 'attachments', 'case_master_state', 'draft_snapshots'];
+  const tables = ['fault_injections', 'case_events', 'processing_jobs', 'payment_attempts', 'payment_events', 'payment_intents', 'submission_attempts', 'receipts', 'custody_submissions', 'synthetic_signatures', 'package_lineage', 'correction_requests', 'filing_packages', 'upload_sessions', 'attachments', 'case_master_state', 'draft_snapshots', 'service_drafts'];
   await env.DB.batch(tables.map((table) => env.DB.prepare(`DELETE FROM ${table} WHERE run_id = ?`).bind(runId)));
   await env.DB.prepare('UPDATE demo_runs SET processor_paused = 0, lose_submission = 1, lose_payment = 1 WHERE run_id = ?').bind(runId).run();
   await seedRun(runId);
@@ -674,10 +711,10 @@ async function handleUpload(request: Request, runId: string) {
   const file = form.get('file');
   const slot = String(form.get('slot') ?? '');
   const clientSha256 = String(form.get('clientSha256') ?? '');
-  if (!(file instanceof File)) return errorResponse('DARJ_ATTACHMENT_UPLOAD_INCOMPLETE', 'UPLOAD', 'Choose a demo PDF to continue.', true, 400);
-  if (!ALLOWED_SLOTS.has(slot)) return errorResponse('DARJ_ATTACHMENT_UPLOAD_INCOMPLETE', 'UPLOAD', 'Choose one of the three demo attachment slots.', false, 400);
-  if (!/^DARJ-[A-Za-z0-9._ -]+\.pdf$/u.test(file.name) || file.type !== 'application/pdf') return errorResponse('DARJ_ATTACHMENT_TYPE_UNSUPPORTED', 'UPLOAD', 'Only demo PDF files with names starting DARJ are accepted.', true, 415);
-  if (file.size > MAX_DEMO_PDF_BYTES) return errorResponse('DARJ_ATTACHMENT_UPLOAD_INCOMPLETE', 'UPLOAD', 'This file exceeds DARJ’s 12 MB demo limit.', true, 413);
+  if (!(file instanceof File)) return errorResponse('DARJ_ATTACHMENT_UPLOAD_INCOMPLETE', 'UPLOAD', 'Choose a sample PDF to continue.', true, 400);
+  if (!ALLOWED_SLOTS.has(slot)) return errorResponse('DARJ_ATTACHMENT_UPLOAD_INCOMPLETE', 'UPLOAD', 'Choose one of the three sample attachment slots.', false, 400);
+  if (!/^DARJ-[A-Za-z0-9._ -]+\.pdf$/u.test(file.name) || file.type !== 'application/pdf') return errorResponse('DARJ_ATTACHMENT_TYPE_UNSUPPORTED', 'UPLOAD', 'Only sample PDF files with names starting DARJ are accepted.', true, 415);
+  if (file.size > MAX_DEMO_PDF_BYTES) return errorResponse('DARJ_ATTACHMENT_UPLOAD_INCOMPLETE', 'UPLOAD', 'This file exceeds DARJ’s 12 MB review limit.', true, 413);
   const bytes = new Uint8Array(await file.arrayBuffer());
   if (!sniffDemoPdf(bytes)) return errorResponse('DARJ_ATTACHMENT_TYPE_UNSUPPORTED', 'UPLOAD', 'The stored bytes are not a complete PDF document.', true, 415);
   const hash = await sha256Hex(bytes);
@@ -692,7 +729,7 @@ async function handleUpload(request: Request, runId: string) {
 
 async function verifyAttachments(runId: string): Promise<AttachmentRow[]> {
   const attachments = await getAttachments(runId);
-  if (attachments.length !== 3) throw new Error('DARJ_ATTACHMENT_UPLOAD_INCOMPLETE|All three demo PDF slots must be complete before sealing.');
+  if (attachments.length !== 3) throw new Error('DARJ_ATTACHMENT_UPLOAD_INCOMPLETE|All three sample PDF slots must be complete before sealing.');
   await Promise.all(attachments.map(async (attachment) => {
     const object = await env.FILES.get(attachment.objectKey);
     if (!object) throw new Error('DARJ_ATTACHMENT_UPLOAD_INCOMPLETE|A stored attachment is unavailable. Upload it again; form values are unchanged.');
@@ -720,7 +757,7 @@ async function isPackageCurrent(runId: string, row: DatabaseRow): Promise<boolea
 
 async function getState(runId: string) {
   const features = featureFlags();
-  const [draft, packageRow, run, uploadSessions, master, pauseUpload, correction, lineage, attachments, payment, processingJob, events] = await Promise.all([
+  const [draft, packageRow, run, uploadSessions, master, pauseUpload, correction, lineage, attachments, payment, processingJob, events, serviceDrafts] = await Promise.all([
     latestDraft(runId),
     latestPackage(runId),
     getRun(runId),
@@ -733,6 +770,7 @@ async function getState(runId: string) {
     getPayment(runId),
     getProcessingJob(runId),
     getEvents(runId),
+    getServiceDrafts(runId),
   ]);
   const packageCurrent = Boolean(packageRow && draft && packageInputsMatch(packageRow, JSON.parse(String(draft.form_json)) as FormDataShape, attachments));
   const [signature, receipt] = await Promise.all([
@@ -755,7 +793,17 @@ async function getState(runId: string) {
     lineage,
     features,
     events,
+    serviceDrafts,
   };
+}
+
+async function getServiceDrafts(runId: string) {
+  const result = await env.DB.prepare(`SELECT filing_id, form_code, title, financial_year, applicant_name, note, status, created_at, updated_at
+    FROM service_drafts WHERE run_id = ? ORDER BY updated_at DESC`).bind(runId).all();
+  return result.results.map((row) => ({
+    filingId: String(row.filing_id), formCode: String(row.form_code), title: String(row.title), financialYear: String(row.financial_year),
+    applicantName: String(row.applicant_name), note: String(row.note), status: String(row.status), createdAt: String(row.created_at), updatedAt: String(row.updated_at),
+  }));
 }
 
 async function latestDraft(runId: string) { return env.DB.prepare('SELECT * FROM draft_snapshots WHERE run_id = ? AND case_id = ? ORDER BY version DESC LIMIT 1').bind(runId, CASE_ID).first(); }

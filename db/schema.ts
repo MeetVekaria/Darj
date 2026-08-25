@@ -9,6 +9,22 @@ export const demoRuns = sqliteTable('demo_runs', {
   losePayment: integer('lose_payment').notNull().default(1),
 });
 
+export const serviceDrafts = sqliteTable('service_drafts', {
+  runId: text('run_id').notNull(),
+  filingId: text('filing_id').notNull(),
+  formCode: text('form_code').notNull(),
+  title: text('title').notNull(),
+  financialYear: text('financial_year').notNull(),
+  applicantName: text('applicant_name').notNull(),
+  note: text('note').notNull(),
+  status: text('status').notNull(),
+  createdAt: text('created_at').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.runId, table.filingId] }),
+  index('idx_service_drafts_run_updated').on(table.runId, table.updatedAt),
+]);
+
 export const draftSnapshots = sqliteTable('draft_snapshots', {
   runId: text('run_id').notNull(),
   caseId: text('case_id').notNull(),
