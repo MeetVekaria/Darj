@@ -210,7 +210,24 @@ export async function POST(request: Request) {
   } catch (caught) { return domainError(caught); }
 }
 
-async function initializeDatabase() { await env.DB.batch(SCHEMA.map((sql) => env.DB.prepare(sql))); }
+let databaseInitialization: Promise<void> | null = null;
+
+async function initializeDatabase() {
+  // Sites applies the packaged Drizzle migrations before the production worker is
+  // published. Replaying every DDL statement on each request adds avoidable D1
+  // round trips and lock contention. The fallback remains for an uninitialised
+  // local development database and is cached for the lifetime of the worker.
+  if (process.env.NODE_ENV === 'production') return;
+  if (!databaseInitialization) {
+    databaseInitialization = env.DB.batch(SCHEMA.map((sql) => env.DB.prepare(sql)))
+      .then(() => undefined)
+      .catch((error: unknown) => {
+        databaseInitialization = null;
+        throw error;
+      });
+  }
+  await databaseInitialization;
+}
 
 async function authorizeMutation(request: Request, stage: string): Promise<string | NextResponse> {
   const runId = readRunId(request);
@@ -264,24 +281,27 @@ async function consumeRateLimit(key: string, limit: number, windowMs: number): P
 
 async function seedRun(runId: string) {
   const savedAt = new Date().toISOString();
-  await env.DB.prepare(`INSERT INTO draft_snapshots (run_id, case_id, version, base_version, form_json, changed_paths, saved_at) VALUES (?, ?, 17, 16, ?, ?, ?)`)
-    .bind(runId, CASE_ID, JSON.stringify(INITIAL_FORM), JSON.stringify([]), savedAt).run();
-  await env.DB.prepare(`INSERT INTO case_master_state (run_id, case_id, pinned_version, pinned_office, current_version, current_office, source, review_state)
-    VALUES (?, ?, 7, ?, 7, ?, 'Demo company master', 'CURRENT')`)
-    .bind(runId, CASE_ID, INITIAL_FORM.registeredOffice, INITIAL_FORM.registeredOffice).run();
   const files = [
     ['financialStatements', 'DARJ-financial-statements.pdf', 'Demo financial statements'],
     ['auditorReport', 'DARJ-auditor-report.pdf', 'Demo auditor report'],
     ['boardReport', 'DARJ-board-report.pdf', 'Demo board report'],
   ] as const;
-  for (const [slot, filename, title] of files) {
+  const documents = await Promise.all(files.map(async ([slot, filename, title]) => {
     const bytes = new TextEncoder().encode(`%PDF-1.4\n% DARJ demo document\n1 0 obj<</Type/Catalog>>endobj\n% ${title}\n%%EOF`);
     const objectKey = `demo/${runId}/${CASE_ID}/${slot}.pdf`;
-    await env.FILES.put(objectKey, bytes, { httpMetadata: { contentType: 'application/pdf' } });
     const hash = await sha256Hex(bytes);
-    await env.DB.prepare(`INSERT INTO attachments (run_id, case_id, slot, filename, object_key, bytes, mime, sha256, verified_at) VALUES (?, ?, ?, ?, ?, ?, 'application/pdf', ?, ?)`)
-      .bind(runId, CASE_ID, slot, filename, objectKey, bytes.byteLength, hash, savedAt).run();
-  }
+    return { slot, filename, bytes, objectKey, hash };
+  }));
+  await Promise.all(documents.map((document) => env.FILES.put(document.objectKey, document.bytes, { httpMetadata: { contentType: 'application/pdf' } })));
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO draft_snapshots (run_id, case_id, version, base_version, form_json, changed_paths, saved_at) VALUES (?, ?, 17, 16, ?, ?, ?)`)
+      .bind(runId, CASE_ID, JSON.stringify(INITIAL_FORM), JSON.stringify([]), savedAt),
+    env.DB.prepare(`INSERT INTO case_master_state (run_id, case_id, pinned_version, pinned_office, current_version, current_office, source, review_state)
+      VALUES (?, ?, 7, ?, 7, ?, 'Demo company master', 'CURRENT')`)
+      .bind(runId, CASE_ID, INITIAL_FORM.registeredOffice, INITIAL_FORM.registeredOffice),
+    ...documents.map((document) => env.DB.prepare(`INSERT INTO attachments (run_id, case_id, slot, filename, object_key, bytes, mime, sha256, verified_at) VALUES (?, ?, ?, ?, ?, ?, 'application/pdf', ?, ?)`)
+      .bind(runId, CASE_ID, document.slot, document.filename, document.objectKey, document.bytes.byteLength, document.hash, savedAt)),
+  ]);
 }
 
 async function saveDraft(runId: string, body: JsonBody) {
@@ -673,13 +693,13 @@ async function handleUpload(request: Request, runId: string) {
 async function verifyAttachments(runId: string): Promise<AttachmentRow[]> {
   const attachments = await getAttachments(runId);
   if (attachments.length !== 3) throw new Error('DARJ_ATTACHMENT_UPLOAD_INCOMPLETE|All three demo PDF slots must be complete before sealing.');
-  for (const attachment of attachments) {
+  await Promise.all(attachments.map(async (attachment) => {
     const object = await env.FILES.get(attachment.objectKey);
     if (!object) throw new Error('DARJ_ATTACHMENT_UPLOAD_INCOMPLETE|A stored attachment is unavailable. Upload it again; form values are unchanged.');
     const bytes = new Uint8Array(await object.arrayBuffer());
     const serverHash = await sha256Hex(bytes);
     if (!sniffDemoPdf(bytes) || bytes.byteLength !== attachment.bytes || serverHash !== attachment.sha256) throw new Error('DARJ_ATTACHMENT_HASH_MISMATCH|A stored attachment failed authoritative server verification.');
-  }
+  }));
   return attachments;
 }
 
@@ -699,32 +719,42 @@ async function isPackageCurrent(runId: string, row: DatabaseRow): Promise<boolea
 }
 
 async function getState(runId: string) {
-  const draft = await latestDraft(runId);
-  const packageRow = await latestPackage(runId);
-  const packageCurrent = packageRow ? await isPackageCurrent(runId, packageRow) : false;
-  const signature = packageRow ? await env.DB.prepare('SELECT * FROM synthetic_signatures WHERE run_id = ? AND package_id = ?').bind(runId, packageRow.package_id).first() : null;
+  const features = featureFlags();
+  const [draft, packageRow, run, uploadSessions, master, pauseUpload, correction, lineage, attachments, payment, processingJob, events] = await Promise.all([
+    latestDraft(runId),
+    latestPackage(runId),
+    getRun(runId),
+    features.resumableUploads ? getUploadSessions(runId) : Promise.resolve([]),
+    features.masterDrift ? getMasterStateRow(runId) : Promise.resolve(null),
+    env.DB.prepare(`SELECT remaining FROM fault_injections WHERE run_id = ? AND flag = 'pause_upload'`).bind(runId).first(),
+    features.correctionLineage ? getCorrectionState(runId) : Promise.resolve(null),
+    features.correctionLineage ? getLineage(runId) : Promise.resolve([]),
+    getAttachments(runId),
+    getPayment(runId),
+    getProcessingJob(runId),
+    getEvents(runId),
+  ]);
+  const packageCurrent = Boolean(packageRow && draft && packageInputsMatch(packageRow, JSON.parse(String(draft.form_json)) as FormDataShape, attachments));
+  const [signature, receipt] = await Promise.all([
+    packageRow ? env.DB.prepare('SELECT * FROM synthetic_signatures WHERE run_id = ? AND package_id = ?').bind(runId, packageRow.package_id).first() : Promise.resolve(null),
+    packageRow ? getReceiptForPackage(runId, String(packageRow.package_id)) : Promise.resolve(null),
+  ]);
   const signatureValid = Boolean(signature && packageCurrent && signature.provider === 'DARJ_DEMO_ED25519' && signature.signed_hash === packageRow?.package_hash && await verifyPackageSignature(String(packageRow?.package_hash), String(signature.signature_value)));
-  const receipt = packageRow ? await getReceiptForPackage(runId, String(packageRow.package_id)) : null;
-  const payment = await getPayment(runId);
-  const run = await getRun(runId);
-  const uploadSessions = featureFlags().resumableUploads ? await getUploadSessions(runId) : [];
-  const master = featureFlags().masterDrift ? await getMasterStateRow(runId) : null;
-  const pauseUpload = await env.DB.prepare(`SELECT remaining FROM fault_injections WHERE run_id = ? AND flag = 'pause_upload'`).bind(runId).first();
   return {
     runId, caseId: CASE_ID,
     draft: draft ? { version: Number(draft.version), form: JSON.parse(String(draft.form_json)) as FormDataShape, savedAt: String(draft.saved_at) } : null,
-    attachments: (await getAttachments(runId)).map((attachment) => ({ slot: attachment.slot, filename: attachment.filename, bytes: attachment.bytes, mime: attachment.mime, sha256: attachment.sha256, verifiedAt: attachment.verifiedAt })),
+    attachments: attachments.map((attachment) => ({ slot: attachment.slot, filename: attachment.filename, bytes: attachment.bytes, mime: attachment.mime, sha256: attachment.sha256, verifiedAt: attachment.verifiedAt })),
     package: packageRow ? toPackage(packageRow) : null, packageCurrent,
     signature: signature ? toSignature(signature) : null, signatureValid,
-    receipt, payment, processingJob: await getProcessingJob(runId),
+    receipt, payment, processingJob,
     processorPaused: Number(run?.processor_paused) === 1,
     uploadPauseArmed: Number(pauseUpload?.remaining ?? 0) > 0,
     uploadSessions,
     master: toMasterState(master),
-    correction: featureFlags().correctionLineage ? await getCorrectionState(runId) : null,
-    lineage: featureFlags().correctionLineage ? await getLineage(runId) : [],
-    features: featureFlags(),
-    events: await getEvents(runId),
+    correction,
+    lineage,
+    features,
+    events,
   };
 }
 
