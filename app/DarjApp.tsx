@@ -1,10 +1,11 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import * as tus from 'tus-js-client';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { Upload } from 'tus-js-client';
 import { localDelete, localGet, localPut, localStorageAvailable } from '@/lib/local-db';
+import type { ServiceCategory, ServiceItem } from '@/lib/service-catalog';
 
-type Screen = 'login' | 'filings' | 'prepare' | 'jaanch' | 'mohar' | 'sign' | 'rasid' | 'status' | 'recovery' | 'lineage' | 'evidence' | 'limitations' | 'demoControls';
+type Screen = 'login' | 'filings' | 'services' | 'company' | 'documents' | 'payments' | 'guidance' | 'about' | 'prepare' | 'jaanch' | 'mohar' | 'sign' | 'rasid' | 'status' | 'recovery' | 'lineage' | 'evidence' | 'limitations' | 'demoControls';
 type FormShape = {
   registeredOffice: string;
   financialYear: string;
@@ -50,6 +51,10 @@ type DarjError = {
 };
 type LocalDraft = { runId?: string; version: number; form: FormShape; savedAt: string; focusedField?: string };
 type DraftConflict = { local: FormShape; server: { version: number; form: FormShape; savedAt: string }; changedPaths: string[] };
+type CatalogService = ServiceItem & { categoryId: string; categoryName: string };
+
+const EMPTY_SERVICE_CATEGORIES: ServiceCategory[] = [];
+const EMPTY_CATALOGUE_SERVICES: CatalogService[] = [];
 
 const API = '/api/darj';
 
@@ -70,8 +75,11 @@ export default function DarjApp() {
   const [restoredLocalNeedsSync, setRestoredLocalNeedsSync] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<Record<string, UploadProgress>>({});
+  const [serviceQuery, setServiceQuery] = useState('');
+  const [serviceCategory, setServiceCategory] = useState('all');
+  const [selectedServiceKey, setSelectedServiceKey] = useState('annual:AOC-4');
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const activeUploads = useRef(new Map<string, tus.Upload>());
+  const activeUploads = useRef(new Map<string, Upload>());
 
   useEffect(() => {
     queueMicrotask(() => {
@@ -468,10 +476,11 @@ export default function DarjApp() {
       const serverSession = state.uploadSessions.find((session) => session.slot === slot && session.fingerprint === fingerprint && session.state === 'UPLOADING');
       const initialOffset = serverSession?.confirmedOffset ?? 0;
       setUploadProgress((current) => ({ ...current, [slot]: { filename: file.name, offset: initialOffset, total: file.size, state: 'UPLOADING' } }));
+      const { Upload: TusUpload } = await import('tus-js-client');
       await new Promise<void>((resolve, reject) => {
         let settled = false;
         const finish = (callback: () => void) => { if (!settled) { settled = true; callback(); } };
-        const upload = new tus.Upload(file, {
+        const upload = new TusUpload(file, {
           endpoint: '/api/darj/uploads',
           uploadUrl: serverSession?.uploadUrl ?? null,
           chunkSize: 6 * 1024 * 1024,
@@ -605,31 +614,40 @@ export default function DarjApp() {
   return (
     <div className="app-shell">
       <Disclosure onOpen={() => navigate('limitations')} />
-      <AppHeader screen={screen} state={state} onNavigate={navigate} onSignOut={() => void signOut()} signingOut={busy === 'logout'} />
-      <main id="main-content" className="app-main">
-        {notice && <div className="notice" role="status" aria-live="polite"><span className="status-mark progress" />{notice}</div>}
-        {error && <ErrorPanel error={error} />}
+      <AppHeader screen={screen} state={state} serviceQuery={serviceQuery} onServiceQuery={setServiceQuery} onNavigate={navigate} onSignOut={() => void signOut()} signingOut={busy === 'logout'} />
+      <div className="platform-frame">
+        <PlatformNav screen={screen} onNavigate={navigate} />
+        <main id="main-content" className="app-main">
+          {notice && <div className="notice" role="status" aria-live="polite"><span className="status-mark progress" />{notice}</div>}
+          {error && <ErrorPanel error={error} />}
 
-        {screen === 'filings' && <FilingsScreen state={state} onPrepare={() => navigate(resumeScreen(state))} onRecovery={() => navigate('recovery')} />}
-        {screen === 'prepare' && (
-          <PrepareScreen state={state} form={form} saveState={saveState} busy={busy} online={online} storageReady={storageReady} conflict={conflict}
-            onChange={changeField} onJaanch={() => void runChecks()} onResolveConflict={(choice) => void resolveConflict(choice)}
-            uploadProgress={uploadProgress} onUpload={(slot, file) => void uploadAttachment(slot, file)} onPauseUpload={(slot) => void pauseUpload(slot)}
-            onMasterReview={(choice) => void reviewMaster(choice)} onExport={exportDraft} onImport={(file) => void importDraft(file)} onFieldFocus={rememberFocusedField} />
-        )}
-        {screen === 'jaanch' && (
-          <JaanchScreen checks={checks} blocking={blocking} passed={passed} busy={busy} onGoToField={(fieldPath) => {
-            navigate('prepare'); setTimeout(() => document.getElementById(fieldPath === 'registeredOffice' ? 'field-office' : 'field-boardMeetings')?.focus(), 80);
-          }} onRerun={() => void runChecks()} onSeal={() => void createMohar()} online={online} />
-        )}
-        {screen === 'mohar' && <MoharScreen state={state} busy={busy} online={online} onSign={() => void sign()} />}
-        {screen === 'sign' && <SignScreen state={state} busy={busy} online={online} onSubmit={() => void submit()} onEdit={() => { navigate('prepare'); setNotice('Editing creates a new draft and invalidates this signature for the next package.'); }} />}
-        {screen === 'rasid' && <RasidScreen state={state} busy={busy} online={online} onPay={() => void approvePayment()} onStatus={() => navigate('status')} />}
-        {screen === 'status' && <StatusScreen state={state} accepted={accepted} busy={busy} online={online} onPause={() => void pauseProcessor()} onResume={() => void resumeProcessor()} />}
-        {screen === 'recovery' && <RecoveryScreen state={state} onOpenMain={() => navigate('prepare')} />}
-        {screen === 'lineage' && (state.features.correctionLineage ? <LineageScreen state={state} busy={busy} onCreate={() => void createCorrection()} onSign={() => { if (state.package?.packageId === state.correction?.childPackageId) navigate('mohar'); }} /> : <FilingsScreen state={state} onPrepare={() => navigate(resumeScreen(state))} onRecovery={() => navigate('recovery')} />)}
-        {screen === 'demoControls' && <DemoControlsScreen state={state} busy={busy} onControl={(flag) => void runControl(flag)} onPause={() => void pauseProcessor()} onResume={() => void resumeProcessor()} onReset={() => void resetDemo()} onLineage={() => navigate('lineage')} />}
-      </main>
+          {screen === 'filings' && <FilingsScreen state={state} onPrepare={() => navigate(resumeScreen(state))} onRecovery={() => navigate('recovery')} onNavigate={navigate} />}
+          {screen === 'services' && <ServiceDirectoryScreen query={serviceQuery} category={serviceCategory} selectedKey={selectedServiceKey} onQuery={setServiceQuery} onCategory={setServiceCategory} onSelect={setSelectedServiceKey} onOpenWorking={() => navigate(resumeScreen(state))} />}
+          {screen === 'company' && <CompanyScreen state={state} onPrepare={() => navigate(resumeScreen(state))} onDocuments={() => navigate('documents')} />}
+          {screen === 'documents' && <DocumentsScreen state={state} onPrepare={() => navigate('prepare')} />}
+          {screen === 'payments' && <PaymentsScreen state={state} onReceipt={() => navigate(state.receipt ? 'rasid' : resumeScreen(state))} />}
+          {screen === 'guidance' && <GuidanceScreen onNavigate={navigate} />}
+          {screen === 'about' && <AboutScreen onNavigate={navigate} />}
+          {screen === 'prepare' && (
+            <PrepareScreen state={state} form={form} saveState={saveState} busy={busy} online={online} storageReady={storageReady} conflict={conflict}
+              onChange={changeField} onJaanch={() => void runChecks()} onResolveConflict={(choice) => void resolveConflict(choice)}
+              uploadProgress={uploadProgress} onUpload={(slot, file) => void uploadAttachment(slot, file)} onPauseUpload={(slot) => void pauseUpload(slot)}
+              onMasterReview={(choice) => void reviewMaster(choice)} onExport={exportDraft} onImport={(file) => void importDraft(file)} onFieldFocus={rememberFocusedField} />
+          )}
+          {screen === 'jaanch' && (
+            <JaanchScreen checks={checks} blocking={blocking} passed={passed} busy={busy} onGoToField={(fieldPath) => {
+              navigate('prepare'); setTimeout(() => document.getElementById(fieldPath === 'registeredOffice' ? 'field-office' : 'field-boardMeetings')?.focus(), 80);
+            }} onRerun={() => void runChecks()} onSeal={() => void createMohar()} online={online} />
+          )}
+          {screen === 'mohar' && <MoharScreen state={state} busy={busy} online={online} onSign={() => void sign()} />}
+          {screen === 'sign' && <SignScreen state={state} busy={busy} online={online} onSubmit={() => void submit()} onEdit={() => { navigate('prepare'); setNotice('Editing creates a new draft and invalidates this signature for the next package.'); }} />}
+          {screen === 'rasid' && <RasidScreen state={state} busy={busy} online={online} onPay={() => void approvePayment()} onStatus={() => navigate('status')} />}
+          {screen === 'status' && <StatusScreen state={state} accepted={accepted} busy={busy} online={online} onPause={() => void pauseProcessor()} onResume={() => void resumeProcessor()} />}
+          {screen === 'recovery' && <RecoveryScreen state={state} onOpenMain={() => navigate('prepare')} />}
+          {screen === 'lineage' && (state.features.correctionLineage ? <LineageScreen state={state} busy={busy} onCreate={() => void createCorrection()} onSign={() => { if (state.package?.packageId === state.correction?.childPackageId) navigate('mohar'); }} /> : <FilingsScreen state={state} onPrepare={() => navigate(resumeScreen(state))} onRecovery={() => navigate('recovery')} onNavigate={navigate} />)}
+          {screen === 'demoControls' && <DemoControlsScreen state={state} busy={busy} onControl={(flag) => void runControl(flag)} onPause={() => void pauseProcessor()} onResume={() => void resumeProcessor()} onReset={() => void resetDemo()} onLineage={() => navigate('lineage')} />}
+        </main>
+      </div>
       <footer className="app-footer">
         <span>DARJ / दर्ज. Independent MCA21 filing prototype.</span>
         <nav aria-label="Footer"><button onClick={() => navigate('evidence')}>Evidence</button><button onClick={() => navigate('limitations')}>Limitations</button>{state.features.correctionLineage && <button onClick={() => navigate('lineage')}>Package lineage</button>}<button onClick={() => void resetDemo()} disabled={busy === 'reset'}>Reset this demo run</button><button onClick={() => void signOut()} disabled={busy === 'logout'}>Sign out</button></nav>
@@ -702,25 +720,45 @@ function LoginScreen({ hydrated, busy, onEnter, onLimitations, error, sessionExp
   );
 }
 
-function AppHeader({ screen, state, onNavigate, onSignOut, signingOut }: { screen: Screen; state: AppState; onNavigate: (screen: Screen) => void; onSignOut: () => void; signingOut: boolean }) {
+function AppHeader({ screen, state, serviceQuery, onServiceQuery, onNavigate, onSignOut, signingOut }: { screen: Screen; state: AppState; serviceQuery: string; onServiceQuery: (value: string) => void; onNavigate: (screen: Screen) => void; onSignOut: () => void; signingOut: boolean }) {
   return (
     <header className="app-header">
       <button className="brand-button" onClick={() => onNavigate('filings')} aria-label="DARJ filing register"><Wordmark compact /></button>
-      <div className="header-context"><span className="mono">FOLIO 01</span><strong>Aster Components Private Limited</strong><span>MCA21 AOC-4 demo. FY 2025-26</span></div>
+      <div className="header-context"><span className="mono">DEMO ORG / 01</span><strong>Aster Components Private Limited</strong><span>Demo company workspace</span></div>
+      <form className="header-search" role="search" onSubmit={(event) => { event.preventDefault(); onNavigate('services'); }}><label htmlFor="global-service-search">Search services and forms</label><span aria-hidden="true">⌕</span><input id="global-service-search" value={serviceQuery} onChange={(event) => onServiceQuery(event.target.value)} placeholder="Search forms, services, tasks" /></form>
       <div className="header-state"><span className="status-mark durable" /><div><small>Current record</small><strong>{journeyLabel(state)}</strong></div></div>
       <div className="header-actions">{screen !== 'filings' && <button className="text-button filing-register-link" onClick={() => onNavigate('filings')}>Filing register</button>}<button className="text-button signout-button" onClick={onSignOut} disabled={signingOut}>{signingOut ? 'Signing out…' : 'Sign out'}</button></div>
     </header>
   );
 }
 
+function PlatformNav({ screen, onNavigate }: { screen: Screen; onNavigate: (screen: Screen) => void }) {
+  const items: Array<{ screen: Screen; label: string; index: string }> = [
+    { screen: 'filings', label: 'Overview', index: '01' },
+    { screen: 'services', label: 'Start a service', index: '02' },
+    { screen: 'company', label: 'Company', index: '03' },
+    { screen: 'documents', label: 'Documents', index: '04' },
+    { screen: 'payments', label: 'Payments', index: '05' },
+    { screen: 'guidance', label: 'Guidance', index: '06' },
+    { screen: 'about', label: 'About DARJ', index: '07' },
+  ];
+  const filingScreens: Screen[] = ['prepare', 'jaanch', 'mohar', 'sign', 'rasid', 'status', 'recovery', 'lineage', 'demoControls'];
+  return <aside className="platform-nav" aria-label="DARJ workspace"><p className="platform-nav-label">Workspace</p><nav>{items.map((item) => <button key={item.screen} className={screen === item.screen || (item.screen === 'filings' && filingScreens.includes(screen)) ? 'active' : ''} onClick={() => onNavigate(item.screen)}><span>{item.index}</span>{item.label}</button>)}</nav><div className="platform-nav-foot"><strong>Independent prototype</strong><span>All records are demo.</span></div></aside>;
+}
+
 function Wordmark({ compact = false }: { compact?: boolean }) {
   return <div className={`wordmark ${compact ? 'compact' : ''}`} aria-label="DARJ, दर्ज"><span>DARJ</span><span className="wordmark-divider" aria-hidden="true" /><span lang="hi">दर्ज</span></div>;
 }
 
-function FilingsScreen({ state, onPrepare, onRecovery }: { state: AppState; onPrepare: () => void; onRecovery: () => void }) {
+function FilingsScreen({ state, onPrepare, onRecovery, onNavigate }: { state: AppState; onPrepare: () => void; onRecovery: () => void; onNavigate: (screen: Screen) => void }) {
   return (
-    <section className="page-section register-page" aria-labelledby="filings-title">
-      <div className="page-heading"><div><p className="eyebrow">MCA21 filing register</p><h1 id="filings-title">Two cases. One exact record at a time.</h1></div><p>Each browser session receives an isolated demo run. Nothing here is shared with another reviewer.</p></div>
+    <section className="page-section dashboard-page" aria-labelledby="filings-title">
+      <div className="dashboard-intro"><div><p className="eyebrow">MCA21 filing workspace</p><h1 id="filings-title">Good afternoon, Meet.</h1><p>Your demo company has one filing that needs attention. DARJ keeps the work, evidence and outcome in one traceable record.</p></div><button className="primary dashboard-start" onClick={() => onNavigate('services')}>Start a service <span aria-hidden="true">→</span></button></div>
+      <div className="dashboard-grid">
+        <article className="priority-card"><div className="priority-head"><div><p className="eyebrow">Priority / AOC-4</p><h2>Annual financial filing</h2></div><span className="due-chip">Due scenario</span></div><div className="priority-progress" aria-label="Filing progress"><span className="done">Draft</span><span className={state.package ? 'done' : 'current'}>Jaanch</span><span className={state.receipt ? 'done' : ''}>Mohar</span><span className={state.receipt ? 'done' : ''}>Rasid</span></div><dl><div><dt>Entity</dt><dd>Aster Components Private Limited</dd></div><div><dt>Financial year</dt><dd>2025–26</dd></div><div><dt>Current record</dt><dd>{journeyLabel(state)}</dd></div><div><dt>Evidence</dt><dd>{state.attachments.length} verified PDFs</dd></div></dl><button className="primary" onClick={onPrepare}>{state.receipt ? 'Open durable record' : 'Continue the filing room'} <span aria-hidden="true">→</span></button></article>
+        <aside className="filing-passport"><div className="passport-head"><span>FILING PASSPORT</span><strong>ACPL / 2025–26</strong></div><div className="passport-mark">A</div><dl><div><dt>Master snapshot</dt><dd>{state.master?.pinnedVersion ?? 7}</dd></div><div><dt>Draft version</dt><dd>v{state.draft?.version ?? 17}</dd></div><div><dt>Verified files</dt><dd>{state.attachments.length} / 3</dd></div><div><dt>Custody state</dt><dd>{state.receipt ? 'RECEIVED' : 'NOT SUBMITTED'}</dd></div></dl><small>One portable view of data provenance, attachments, checks and custody.</small></aside>
+      </div>
+      <div className="workspace-section-heading"><div><p className="eyebrow">Your work</p><h2>Two cases are ready for review.</h2></div><button className="text-button" onClick={() => onNavigate('services')}>Browse all MCA service categories</button></div>
       <div className="register-table" aria-label="MCA21 demo filing cases">
         <div className="register-table-head"><span>Folio</span><span>Company</span><span>Form / FY</span><span>Due state</span><span>Record state</span><span>Action</span></div>
         <div className="filing-row">
@@ -740,9 +778,67 @@ function FilingsScreen({ state, onPrepare, onRecovery }: { state: AppState; onPr
           <span data-label="Action"><button className="secondary small" onClick={onRecovery}>Try recovery</button></span>
         </div>
       </div>
-      <div className="register-legend"><strong>What the states mean</strong><span><i className="status-mark durable" /> Durable in DARJ</span><span><i className="status-mark progress" /> In progress</span><span><i className="status-mark attention" /> Needs attention</span></div>
+      <div className="dashboard-lower"><section><div className="workspace-section-heading compact"><div><p className="eyebrow">Compliance calendar</p><h2>Next on the demo record</h2></div></div><div className="calendar-list"><div><time>30 SEP</time><span><strong>DIR-3 KYC</strong><small>Director identity update · catalogue only</small></span><Status label="REFERENCE" tone="progress" /></div><div><time>30 OCT</time><span><strong>AOC-4</strong><small>Working reliability journey</small></span><Status label={journeyLabel(state)} tone={state.receipt ? 'durable' : 'attention'} /></div><div><time>29 NOV</time><span><strong>MGT-7</strong><small>Annual return · catalogue only</small></span><Status label="REFERENCE" tone="progress" /></div></div></section><section><div className="workspace-section-heading compact"><div><p className="eyebrow">Recent activity</p><h2>What changed</h2></div></div><ol className="activity-list"><li><span>01</span><div><strong>Draft restored and synchronised</strong><small>Version {state.draft?.version ?? 17} · browser and server</small></div></li><li><span>02</span><div><strong>{state.attachments.length} attachments verified</strong><small>MIME, bytes and SHA-256 confirmed</small></div></li><li><span>03</span><div><strong>Company master pinned</strong><small>Snapshot {state.master?.pinnedVersion ?? 7} retained for provenance</small></div></li></ol></section></div>
+      <div className="register-legend"><strong>State language</strong><span><i className="status-mark durable" /> Durable in DARJ</span><span><i className="status-mark progress" /> Reference or in progress</span><span><i className="status-mark attention" /> Needs attention</span></div>
     </section>
   );
+}
+
+function ServiceDirectoryScreen({ query, category, selectedKey, onQuery, onCategory, onSelect, onOpenWorking }: { query: string; category: string; selectedKey: string; onQuery: (value: string) => void; onCategory: (value: string) => void; onSelect: (key: string) => void; onOpenWorking: () => void }) {
+  const [catalogue, setCatalogue] = useState<{ serviceCategories: ServiceCategory[]; allServices: CatalogService[] } | null>(null);
+  useEffect(() => {
+    let active = true;
+    void import('@/lib/service-catalog').then((module) => { if (active) setCatalogue({ serviceCategories: module.serviceCategories, allServices: module.allServices }); });
+    return () => { active = false; };
+  }, []);
+  const categories = catalogue?.serviceCategories ?? EMPTY_SERVICE_CATEGORIES;
+  const catalogueServices = catalogue?.allServices ?? EMPTY_CATALOGUE_SERVICES;
+  const normalized = query.trim().toLowerCase();
+  const filtered = useMemo(() => catalogueServices.filter((service) => {
+    const inCategory = category === 'all' || service.categoryId === category;
+    const matches = !normalized || [service.code, service.title, service.summary, service.categoryName, service.entity].some((value) => value.toLowerCase().includes(normalized));
+    return inCategory && matches;
+  }), [catalogueServices, category, normalized]);
+  const selected = catalogueServices.find((service) => `${service.categoryId}:${service.code}` === selectedKey) ?? catalogueServices[0];
+  const showOverview = category === 'all' && !normalized;
+  return <section className="page-section service-directory" aria-labelledby="services-title">
+    <div className="directory-hero"><div><p className="eyebrow">MCA service landscape · reference catalogue</p><h1 id="services-title">Start with the task, not the portal map.</h1><p>DARJ organises {catalogueServices.length || 143} common MCA forms and services into {categories.length || 15} plain-language categories. Only the AOC-4 reliability journey is a working end-to-end build; every other entry is an honest reference brief.</p></div><div className="directory-stat"><strong>{catalogueServices.length || 143}</strong><span>forms and services mapped</span><small>Based on MCA navigation, help material and service groupings</small></div></div>
+    <div className="directory-tools"><label className="directory-search"><span>Search the catalogue</span><input value={query} onChange={(event) => onQuery(event.target.value)} placeholder="Try ‘change director’, ‘annual return’ or ‘certified copy’" /></label><label className="directory-filter"><span>Show category</span><select value={category} onChange={(event) => onCategory(event.target.value)}><option value="all">All {categories.length || 15} categories</option>{categories.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.services.length}</option>)}</select></label></div>
+    <div className="catalogue-layout">
+      <div className="catalogue-results">
+        {!catalogue ? <div className="catalogue-loading"><span className="status-mark progress" /><div><strong>Opening the service map…</strong><p>The catalogue is loaded separately so the login and filing journey remain fast.</p></div></div> : showOverview ? <div className="category-grid">{categories.map((item, index) => <article key={item.id}><div className="category-card-head"><span className="mono">{String(index + 1).padStart(2, '0')}</span><small>{item.kicker}</small></div><h2>{item.name}</h2><p>{item.description}</p><ul>{item.services.slice(0, 3).map((service) => <li key={service.code}><code>{service.code}</code><span>{service.title}</span></li>)}</ul><button className="secondary" onClick={() => onCategory(item.id)}>Explore {item.services.length} services</button></article>)}</div> : <><div className="results-heading"><strong>{filtered.length} matching services</strong><button className="text-button" onClick={() => { onQuery(''); onCategory('all'); }}>Clear filters</button></div><div className="service-results">{filtered.map((service) => { const key = `${service.categoryId}:${service.code}`; return <button key={key} className={selectedKey === key ? 'selected' : ''} onClick={() => onSelect(key)}><span className="service-code">{service.code}</span><span><strong>{service.title}</strong><small>{service.summary}</small></span><span className={`availability ${service.availability}`}>{service.availability === 'working' ? 'Working demo' : 'Reference brief'}</span></button>; })}</div></>}
+      </div>
+      {selected ? <aside className="service-brief" aria-live="polite"><div className="service-brief-top"><span className={`availability ${selected.availability}`}>{selected.availability === 'working' ? 'Working demo workflow' : 'Catalogue reference'}</span><code>{selected.code}</code></div><p className="eyebrow">{selected.categoryName}</p><h2>{selected.title}</h2><p>{selected.summary}</p><dl><div><dt>For</dt><dd>{selected.entity}</dd></div><div><dt>Access</dt><dd>{selected.access}</dd></div><div><dt>What works here</dt><dd>{selected.availability === 'working' ? 'Complete DARJ draft-to-outcome journey' : 'Service discovery and plain-language brief only'}</dd></div></dl>{selected.availability === 'working' ? <button className="primary" onClick={onOpenWorking}>Open AOC-4 filing room <span aria-hidden="true">→</span></button> : <div className="catalogue-boundary"><strong>No fake workflow</strong><p>DARJ does not pretend this service is implemented. The entry helps reviewers see the full platform architecture without weakening the one tested journey.</p></div>}<small className="service-source">Reference architecture only. Confirm current legal applicability, fees and form versions on the official MCA service before real use.</small></aside> : <aside className="service-brief catalogue-placeholder" aria-live="polite"><span className="availability reference">Loading reference</span><p className="eyebrow">Service map</p><h2>Plain-language service briefs</h2><p>The service map opens as a separate lightweight module.</p></aside>}
+    </div>
+  </section>;
+}
+
+function CompanyScreen({ state, onPrepare, onDocuments }: { state: AppState; onPrepare: () => void; onDocuments: () => void }) {
+  return <section className="page-section company-page" aria-labelledby="company-title"><div className="entity-mast"><div><p className="eyebrow">Demo company workspace</p><h1 id="company-title">Aster Components<br />Private Limited</h1><p>One trusted company context for filings, people, documents, payments and provenance.</p></div><div className="entity-monogram" aria-hidden="true">AC</div></div><div className="entity-status-row"><div><span>Demo record</span><strong>000117</strong></div><div><span>Entity type</span><strong>Private company</strong></div><div><span>Master snapshot</span><strong>v{state.master?.pinnedVersion ?? 7}</strong></div><div><span>Workspace state</span><Status label="ACTIVE DEMO" tone="durable" /></div></div><div className="company-grid"><section className="company-panel"><div className="panel-heading"><div><p className="eyebrow">Company profile</p><h2>Registry snapshot</h2></div><span className="source-chip">Pinned source</span></div><dl className="profile-grid"><div><dt>Registered office</dt><dd>{state.master?.pinnedOffice ?? '23 Industrial Estate, Pune, Maharashtra'}</dd></div><div><dt>Financial year</dt><dd>1 April – 31 March</dd></div><div><dt>Company status</dt><dd>Active · demo</dd></div><div><dt>Authorised filer</dt><dd>Meet Vekaria · demo role</dd></div></dl></section><section className="company-panel"><div className="panel-heading"><div><p className="eyebrow">People & signing</p><h2>Authorised roles</h2></div></div><div className="people-list"><div><span className="person-mark">MV</span><span><strong>Meet Vekaria</strong><small>Authorised filer · active demo session</small></span><Status label="VERIFIED ROLE" tone="durable" /></div><div><span className="person-mark light">AD</span><span><strong>Ananya Desai</strong><small>Director · demo record</small></span><Status label="REFERENCE" tone="progress" /></div></div></section><section className="company-panel wide"><div className="panel-heading"><div><p className="eyebrow">Compliance position</p><h2>What needs action</h2></div><button className="text-button" onClick={onPrepare}>Open filing room</button></div><div className="obligation-board"><article><span className="obligation-number">01</span><div><strong>AOC-4 · FY 2025–26</strong><p>Working DARJ reliability journey with {state.attachments.length} verified attachments.</p></div><Status label={journeyLabel(state)} tone={state.receipt ? 'durable' : 'attention'} /></article><article><span className="obligation-number">02</span><div><strong>MGT-7 · Annual return</strong><p>Shown to complete the company view; no demo filing workflow is implemented.</p></div><Status label="CATALOGUE ONLY" tone="progress" /></article></div></section><section className="company-panel"><div className="panel-heading"><div><p className="eyebrow">Data provenance</p><h2>Master drift guard</h2></div></div><p className="panel-copy">DARJ pins a company snapshot to the filing and shows old-versus-current values before sealing. It never silently changes a draft.</p><div className="provenance-line"><span>Snapshot {state.master?.pinnedVersion ?? 7}</span><span>→</span><strong>{state.master?.reviewState ?? 'CURRENT'}</strong></div></section><section className="company-panel"><div className="panel-heading"><div><p className="eyebrow">Document vault</p><h2>{state.attachments.length} verified records</h2></div></div><p className="panel-copy">Every completed attachment records filename, MIME, byte count, checksum and verification time.</p><button className="secondary" onClick={onDocuments}>Open document vault</button></section></div></section>;
+}
+
+function DocumentsScreen({ state, onPrepare }: { state: AppState; onPrepare: () => void }) {
+  return <section className="page-section documents-page" aria-labelledby="documents-title"><div className="page-heading"><div><p className="eyebrow">Company document vault</p><h1 id="documents-title">Evidence, not a loose upload folder.</h1></div><p>These are demo demo files. DARJ records provenance and verification boundaries for every filing attachment.</p></div><div className="document-summary"><div><strong>{state.attachments.length}</strong><span>server-verified PDFs</span></div><div><strong>{state.uploadSessions.filter((item) => item.state === 'UPLOADING').length}</strong><span>resumable sessions</span></div><div><strong>12 MB</strong><span>per-file demo limit</span></div><div><strong>SHA-256</strong><span>client and server match</span></div></div><div className="document-table"><div className="document-table-head"><span>Document</span><span>Filing use</span><span>Size</span><span>Fingerprint</span><span>State</span></div>{state.attachments.map((item) => <article key={item.slot}><span><i className="file-mark">PDF</i><span><strong>{item.filename}</strong><small>{labelSlot(item.slot)}</small></span></span><span><strong>AOC-4 / FY 2025–26</strong><small>Package input</small></span><span className="mono">{formatBytes(item.bytes)}</span><code title={item.sha256}>{shortHash(item.sha256)}</code><Status label="SERVER VERIFIED" tone="durable" /></article>)}</div><div className="document-guides"><article><span className="mono">01</span><h2>Resumable by protocol</h2><p>TUS tracks a server-confirmed offset and R2-compatible multipart parts. Reloading does not resend completed chunks.</p></article><article><span className="mono">02</span><h2>Complete means verified</h2><p>A filename or progress bar is not completion. MIME, PDF bytes, EOF, size and hash must agree.</p></article><article><span className="mono">03</span><h2>Bound into Mohar</h2><p>Sealing records the exact attachment manifest so later replacement creates a new package boundary.</p></article></div><div className="action-bar"><div><strong>Manage filing attachments in context</strong><small>Replacement and upload recovery stay inside the AOC-4 filing room.</small></div><button className="primary" onClick={onPrepare}>Open attachments <span aria-hidden="true">→</span></button></div></section>;
+}
+
+function PaymentsScreen({ state, onReceipt }: { state: AppState; onReceipt: () => void }) {
+  const [copies, setCopies] = useState(1);
+  const estimated = 6000 + Math.max(0, copies - 1) * 100;
+  return <section className="page-section payments-workspace" aria-labelledby="payments-title"><div className="page-heading"><div><p className="eyebrow">Payments & reconciliation</p><h1 id="payments-title">Money state stays separate from filing state.</h1></div><p>No real money, bank, card, UPI, OTP or payment data is used. This screen demonstrates clear status and recovery language.</p></div><div className="payments-grid"><section className="payment-ledger"><div className="panel-heading"><div><p className="eyebrow">Current transaction</p><h2>AOC-4 demo fee</h2></div><Status label={state.payment?.state ?? 'NOT CREATED'} tone={state.payment?.state === 'PAID' ? 'durable' : 'progress'} /></div><strong className="ledger-amount">₹6,000.00</strong><dl><div><dt>Custody</dt><dd>{state.receipt ? 'RECEIVED' : 'NOT SUBMITTED'}</dd></div><div><dt>Payment</dt><dd>{state.payment?.state ?? 'NOT STARTED'}</dd></div><div><dt>Processing</dt><dd>{state.processingJob?.state ?? 'NOT STARTED'}</dd></div><div><dt>Reconciliation ref.</dt><dd className="mono">{state.payment?.reconciliationReference ?? '—'}</dd></div></dl><button className="primary" onClick={onReceipt}>{state.receipt ? 'Open Rasid and payment' : 'Continue filing first'} <span aria-hidden="true">→</span></button></section><section className="fee-preview"><p className="eyebrow">Illustrative fee preview</p><h2>See the cost before starting</h2><p>This calculator is a design example, not an official fee computation.</p><label><span>Service</span><select><option>AOC-4 · demo base fee</option></select></label><label><span>Illustrative document copies</span><input type="number" min="1" max="10" value={copies} onChange={(event) => setCopies(Math.min(10, Math.max(1, Number(event.target.value) || 1)))} /></label><div className="estimate-total"><span>Illustrative total</span><strong>₹{estimated.toLocaleString('en-IN')}.00</strong></div><small>Always confirm current fees and additional-fee rules on the official service before real use.</small></section></div><div className="state-model"><article><span className="status-mark durable" /><div><small>Custody</small><strong>Did DARJ receive the exact package?</strong><p>Proved by Rasid and package hash.</p></div></article><article><span className="status-mark progress" /><div><small>Payment</small><strong>Was the simulated fee approved?</strong><p>Reconciled from server state after callback loss.</p></div></article><article><span className="status-mark attention" /><div><small>Processing</small><strong>What is the downstream outcome?</strong><p>Delay never asks the user to pay or submit again.</p></div></article></div></section>;
+}
+
+function GuidanceScreen({ onNavigate }: { onNavigate: (screen: Screen) => void }) {
+  const guides = [
+    ['Choose the right service', 'Search by plain-language task, entity, form code or service category.', 'services'],
+    ['Prepare an annual filing', 'See how local-first drafts, verified attachments and deterministic Jaanch work.', 'prepare'],
+    ['Understand a Rasid', 'Learn why custody, payment, processing and acceptance are separate states.', 'evidence'],
+    ['Recover from interruption', 'Try upload pause, response loss, callback loss, master drift and processor delay.', 'recovery'],
+  ] as Array<[string, string, Screen]>;
+  return <section className="page-section guidance-page" aria-labelledby="guidance-title"><div className="guidance-hero"><p className="eyebrow">Guidance centre</p><h1 id="guidance-title">Plain answers before a deadline.</h1><p>Help is organised around what a person is trying to finish—not internal portal terminology.</p></div><div className="guide-grid">{guides.map(([title, detail, screen], index) => <button key={title} onClick={() => onNavigate(screen)}><span className="mono">{String(index + 1).padStart(2, '0')}</span><h2>{title}</h2><p>{detail}</p><strong>Open guide →</strong></button>)}</div><div className="help-register"><div><span className="mono">A</span><div><strong>Filing and form guidance</strong><p>Catalogue coverage, data requirements and honest implementation labels.</p></div></div><div><span className="mono">B</span><div><strong>Upload and browser recovery</strong><p>What remains safe locally, what needs the server and how resumable uploads continue.</p></div></div><div><span className="mono">C</span><div><strong>Payments and status</strong><p>How to interpret custody, payment, queue and acceptance without dangerous assumptions.</p></div></div><div><span className="mono">D</span><div><strong>Limitations and escalation</strong><p>What DARJ does not decide, where the demo stops and which official source must be checked.</p></div></div></div><div className="boundary-note"><strong>No compliance chatbot theatre</strong><p>DARJ uses deterministic, explainable checks in the working flow. It does not invent legal advice or claim that a conversational answer determines statutory applicability.</p></div></section>;
+}
+
+function AboutScreen({ onNavigate }: { onNavigate: (screen: Screen) => void }) {
+  return <section className="page-section about-page" aria-labelledby="about-title"><div className="about-mast"><div><p className="eyebrow">About DARJ / दर्ज</p><h1 id="about-title">A reliable filing layer, designed independently.</h1></div><p>DARJ asks one product question: what if a statutory filing behaved like a reliable transaction instead of a fragile browser session?</p></div><div className="about-principles"><article><span>01</span><h2>Save before sync</h2><p>Draft recovery begins locally, then reconciles explicit versions with the server.</p></article><article><span>02</span><h2>Seal an exact package</h2><p>Fields and verified files become one immutable, canonical package hash.</p></article><article><span>03</span><h2>Make retries harmless</h2><p>Idempotency and atomic custody prevent duplicate receipts after lost responses.</p></article><article><span>04</span><h2>Name every state</h2><p>Received, paid, processing and accepted never blur into one vague “submitted” label.</p></article></div><div className="about-split"><section><p className="eyebrow">What this platform covers</p><h2>A complete service map around one complete journey.</h2><p>The platform shell maps company, LLP, director, charge, annual, approval, foreign-company, Nidhi, master-data, document, payment, grievance, investor, DSC, information and help categories. That breadth improves discovery; it does not create fake functionality.</p><button className="primary" onClick={() => onNavigate('services')}>Explore the service map <span aria-hidden="true">→</span></button></section><section className="independence-card"><span className="mono">INDEPENDENCE RECORD / 01</span><h2>Not an MCA service.</h2><ul><li>No live MCA integration or private API access</li><li>No government logo, endorsement or partnership claim</li><li>No real company, DIN, PAN, Aadhaar, OTP or payment data</li><li>No legal-compliance determination</li><li>Working and mocked boundaries shown in product</li></ul><button className="secondary" onClick={() => onNavigate('limitations')}>Read all limitations</button></section></div><div className="mca-context"><div><p className="eyebrow">MCA context</p><h2>Designed for the public-service landscape, not presented as the Ministry.</h2></div><p>The official MCA surface spans policy information, Acts and rules, offices and affiliated bodies, registry master data, company and LLP filings, directors and DSC, payments, documents, grievances, IEPF, data and help. DARJ reorganises those categories for discovery while preserving its independent identity.</p></div></section>;
 }
 
 function PrepareScreen({ state, form, saveState, busy, online, storageReady, conflict, uploadProgress, onChange, onJaanch, onResolveConflict, onUpload, onPauseUpload, onMasterReview, onExport, onImport, onFieldFocus }: {
@@ -863,6 +959,8 @@ function PublicInformationScreen({ screen, onNavigate }: { screen: 'evidence' | 
 function EvidenceScreen() {
   const sources = [
     ['Builder brief', 'Challenge scope and judging criteria', 'https://buildwhatmovesindia.com/brief'],
+    ['MCA current sitemap', 'Current official information and service category structure', 'https://www.mca.gov.in/content/mca/global/en/sitemap.html'],
+    ['MCA website FAQs', 'Official homepage cards, frequently used services and access guidance', 'https://www.mca.gov.in/content/dam/mca/documents/WebsiteFAQ.pdf'],
     ['MCA and PIB, 10 Feb 2026', 'MCA filing volumes and helpdesk data', 'https://www.pib.gov.in/PressReleasePage.aspx?PRID=2226017&lang=1&reg=3'],
     ['Lok Sabha Question 4954', 'MCA AOC-4 and MGT-7/7A filing counts', 'https://sansad.in/getFile/loksabhaquestions/annex/187/AU4954_vFAQV0.pdf?source=pqals'],
     ['MCA and PIB, 3 Feb 2025', 'Existing MCA21 V3 capabilities, validation, status and MFA', 'https://www.pib.gov.in/PressReleaseIframePage.aspx?PRID=2099226&lang=2&reg=48'],
@@ -885,9 +983,9 @@ function LimitationsScreen() {
     'MCA21 V3 already provides web forms, real-time validation, saved drafts, status tracking, helpdesk capabilities, MFA, STP for relevant forms, and an offline utility for selected annual forms.',
     'Every error code begins DARJ_. No official MCA error code is claimed or reproduced.',
     'All payments are simulated. DARJ collects no payment credentials, OTPs, Aadhaar, PAN, real CIN, or other sensitive personal data.',
-    'One AOC-4 prototype schema is implemented. Form-agnostic expansion is an architectural direction, not a proven Round 1 feature.',
+    'One AOC-4 prototype schema is implemented end to end. The wider service directory is a reference catalogue and each non-working entry is labelled as such.',
     'Reported MCA21 difficulties are attributed to the cited ICSI representations and are not presented as universal user outcomes.',
-    'The Round 1 functional interface is in English. Devanagari is used only for the four product terms दर्ज, जाँच, मुहर and रसीद. A full Hindi or regional-language localisation has not been implemented.',
+    'The current functional interface is in English. Devanagari is used only for the four product terms दर्ज, जाँच, मुहर and रसीद. A full Hindi or regional-language localisation has not been implemented.',
   ];
   return <section className="page-section narrow-page" aria-labelledby="limitations-title"><div className="page-heading"><div><p className="eyebrow">Prototype boundary</p><h1 id="limitations-title">What this prototype does not do</h1></div></div><ol className="limitations-list">{limitations.map((item, index) => <li key={item}><span className="mono">{String(index + 1).padStart(2, '0')}</span><p>{item}</p></li>)}</ol></section>;
 }
@@ -1013,6 +1111,12 @@ function fieldLabel(path: string) {
 }
 
 function screenFromPath(pathname: string): Screen {
+  if (pathname === '/services') return 'services';
+  if (pathname === '/company') return 'company';
+  if (pathname === '/documents') return 'documents';
+  if (pathname === '/payments') return 'payments';
+  if (pathname === '/guidance') return 'guidance';
+  if (pathname === '/about') return 'about';
   if (pathname === '/evidence') return 'evidence';
   if (pathname === '/limitations') return 'limitations';
   if (pathname === '/demo-controls') return 'demoControls';
@@ -1030,7 +1134,7 @@ function screenFromPath(pathname: string): Screen {
 
 function pathForScreen(screen: Screen, caseId = 'DARJ-DEMO-AOC4-01') {
   return ({
-    login: '/login', filings: '/filings', prepare: `/filings/${caseId}/prepare`, jaanch: `/filings/${caseId}/jaanch`,
+    login: '/login', filings: '/filings', services: '/services', company: '/company', documents: '/documents', payments: '/payments', guidance: '/guidance', about: '/about', prepare: `/filings/${caseId}/prepare`, jaanch: `/filings/${caseId}/jaanch`,
     mohar: `/filings/${caseId}/mohar`, sign: `/filings/${caseId}/sign`, rasid: `/filings/${caseId}/rasid/DARJ-RASID-8129`,
     status: `/filings/${caseId}/status`, lineage: `/filings/${caseId}/lineage`, recovery: '/recovery', evidence: '/evidence', limitations: '/limitations', demoControls: '/demo-controls',
   } satisfies Record<Screen, string>)[screen];

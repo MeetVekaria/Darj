@@ -235,7 +235,7 @@ test('public and authenticated P0 routes have no serious Axe violations', async 
     expect(result.violations.filter((violation) => ['serious', 'critical'].includes(violation.impact ?? ''))).toEqual([]);
   }
   await login(page); await openPrepare(page);
-  for (const path of ['/filings', '/filings/DARJ-DEMO-AOC4-01/prepare', '/recovery', '/demo-controls']) {
+  for (const path of ['/filings', '/services', '/company', '/documents', '/payments', '/guidance', '/about', '/filings/DARJ-DEMO-AOC4-01/prepare', '/recovery', '/demo-controls']) {
     await page.goto(path);
     const result = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa']).analyze();
     expect(result.violations.filter((violation) => ['serious', 'critical'].includes(violation.impact ?? ''))).toEqual([]);
@@ -245,6 +245,9 @@ test('public and authenticated P0 routes have no serious Axe violations', async 
 test('mobile journey has no horizontal overflow', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'mobile-360', 'This assertion is specific to the 360 px project.');
   await login(page); await openPrepare(page);
-  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
-  expect(overflow).toBeLessThanOrEqual(1);
+  for (const path of ['/filings', '/services', '/company', '/documents', '/payments', '/filings/DARJ-DEMO-AOC4-01/prepare']) {
+    await page.goto(path);
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    expect(overflow, path).toBeLessThanOrEqual(1);
+  }
 });

@@ -1,6 +1,6 @@
 # DARJ / दर्ज
 
-DARJ is an independent prototype for reliable MCA21 statutory filing journeys, demonstrated through one AOC-4 case. It shows local draft recovery, resumable verified attachments, deterministic Jaanch checks, master-data drift review, an immutable Mohar package, retry-safe custody submission, an immutable Rasid, payment reconciliation, delayed processing, and correction lineage.
+DARJ is an independent corporate-filing workspace built around reliable MCA21 statutory filing journeys. Its production-style shell maps 143 forms and services across 15 reference categories, while one AOC-4 case is implemented end to end with local draft recovery, resumable verified attachments, deterministic Jaanch checks, master-data drift review, an immutable Mohar package, retry-safe custody submission, an immutable Rasid, payment reconciliation, delayed processing, and correction lineage.
 
 > **Built for the MCA21 filing context.** DARJ is independent, uses demo data, and does not connect to or represent the Ministry of Corporate Affairs or MCA21. Nothing in the product is a real statutory filing, legal advice, MCA acknowledgement, Digital Signature Certificate, or payment.
 
@@ -32,8 +32,11 @@ npm run build
 
 `test:e2e` runs the desktop Chromium release journeys plus a 360 px mobile project. Use `npm run test:all` for the unit and browser suites together.
 
-## Implemented Round 1 surface
+## Implemented platform surface
 
+- Production-style company workspace with global navigation, task search, company context and clear working-versus-reference labels.
+- Searchable 143-entry MCA service catalogue spanning company, LLP, director, annual, charge, approval, special-entity, master-data, document, payment, grievance, investor, DSC, information and help categories.
+- Demo company profile, compliance calendar, filing passport, document vault, payment state model, fee-preview interaction, guidance centre and independent About record.
 - Isolated 24-hour demo runs and deterministic reset.
 - IndexedDB-first draft snapshots with separate local-save and server-sync states.
 - D1-backed immutable server draft versions with base-version conflict responses.
@@ -56,7 +59,7 @@ npm run build
 
 ## Deliberate deployment adaptation
 
-The source specification described Next.js, Fastify, PostgreSQL and S3-compatible storage as separate applications. This deployable Round 1 build preserves the transaction boundaries in one Sites/Vinext application using Cloudflare D1 and R2. D1 `batch()` and unique constraints provide the atomic prototype custody boundary; no claim is made that this is a production MCA integration or production DSC/payment stack.
+The source specification described Next.js, Fastify, PostgreSQL and S3-compatible storage as separate applications. This deployable build preserves the transaction boundaries in one Sites/Vinext application using Cloudflare D1 and R2. D1 `batch()` and unique constraints provide the atomic prototype custody boundary; no claim is made that this is a production MCA integration or production DSC/payment stack.
 
 All four P1 flags are enabled by default after their acceptance behaviors pass. Each flag can still be set to `false` independently without rolling back its additive D1 migration or exposing a dead control.
 

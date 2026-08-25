@@ -4,6 +4,15 @@ Status reflects the deployed code path, not the existence of a visual control.
 
 **Release gate:** every P0 and P1 implementation and test requirement below is complete in the current source. The active production URL is maintained by the Sites project rather than hard-coded in this file.
 
+## Production platform surface
+
+- Authenticated global shell with overview, service search, company, document, payment, guidance and About workspaces.
+- Static 143-entry reference catalogue grouped into 15 MCA-related service categories.
+- Every catalogue item is marked either `Working demo workflow` or `Catalogue reference`; only AOC-4 opens an end-to-end filing room.
+- Dashboard includes a filing passport, priority journey, two review cases, compliance calendar and activity register using demo data only.
+- Company, document and payment views reuse live state from the tested AOC-4 demo rather than inventing disconnected metrics.
+- Charcoal, mineral blue, off-white and status-green visual system; no government logo or official-product styling.
+
 ## P0
 
 | ID | Capability | Status | Evidence |
