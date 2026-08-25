@@ -743,7 +743,7 @@ function PlatformNav({ screen, onNavigate }: { screen: Screen; onNavigate: (scre
     { screen: 'about', label: 'About DARJ', index: '07' },
   ];
   const filingScreens: Screen[] = ['prepare', 'jaanch', 'mohar', 'sign', 'rasid', 'status', 'recovery', 'lineage', 'demoControls'];
-  return <aside className="platform-nav" aria-label="DARJ workspace"><p className="platform-nav-label">Workspace</p><nav>{items.map((item) => <button key={item.screen} className={screen === item.screen || (item.screen === 'filings' && filingScreens.includes(screen)) ? 'active' : ''} onClick={() => onNavigate(item.screen)}><span>{item.index}</span>{item.label}</button>)}</nav><div className="platform-nav-foot"><strong>Independent prototype</strong><span>All records are demo.</span></div></aside>;
+  return <aside className="platform-nav" aria-label="DARJ workspace"><p className="platform-nav-label">Workspace</p><nav>{items.map((item) => <button key={item.screen} className={screen === item.screen || (item.screen === 'filings' && filingScreens.includes(screen)) ? 'active' : ''} onClick={() => onNavigate(item.screen)}><span>{item.index}</span>{item.label}</button>)}</nav><div className="platform-nav-foot"><strong>Independent prototype</strong><span>Demo records only.</span></div></aside>;
 }
 
 function Wordmark({ compact = false }: { compact?: boolean }) {
