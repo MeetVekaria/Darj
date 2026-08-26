@@ -1,7 +1,6 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import Image from 'next/image';
 import type { Upload } from 'tus-js-client';
 import { localDelete, localGet, localPut, localStorageAvailable } from '@/lib/local-db';
 import type { ServiceCategory, ServiceItem } from '@/lib/service-catalog';
@@ -147,7 +146,7 @@ export default function DarjApp() {
       const local = ready ? await safeReadLocalDraft('DARJ-DEMO-AOC4-01') : null;
       setHasLocalRecovery(Boolean(local));
       const initialScreen = screenFromPath(window.location.pathname);
-      if (initialScreen === 'reviewer' || initialScreen === 'evidence' || initialScreen === 'limitations') return;
+      if (initialScreen === 'reviewer' || initialScreen === 'evidence' || initialScreen === 'limitations' || initialScreen === 'services') return;
       const restored = await refresh();
       if (restored) setScreen(screenFromPath(window.location.pathname) === 'login' ? 'filings' : screenFromPath(window.location.pathname));
     })();
@@ -669,7 +668,8 @@ export default function DarjApp() {
 
   if (screen === 'reviewer') return <ReviewerScreen theme={theme} onTheme={toggleTheme} onNavigate={navigate} />;
   if (screen === 'evidence' || screen === 'limitations') return <PublicInformationScreen screen={screen} theme={theme} onTheme={toggleTheme} onNavigate={navigate} />;
-  if (screen === 'login' || !state || !form) return <LoginScreen theme={theme} onTheme={toggleTheme} hydrated={hydrated} busy={busy === 'login'} onEnter={() => void login()} onReviewer={() => navigate('reviewer')} onLimitations={() => navigate('limitations')} error={error} sessionExpired={sessionExpired} hasLocalRecovery={hasLocalRecovery} storageReady={storageReady} />;
+  if (screen === 'services' && (!state || !form)) return <PublicServicesScreen theme={theme} onTheme={toggleTheme} query={serviceQuery} category={serviceCategory} selectedKey={selectedServiceKey} onQuery={setServiceQuery} onCategory={setServiceCategory} onSelect={setSelectedServiceKey} onHome={() => navigate('login')} onReviewer={() => navigate('reviewer')} onLimitations={() => navigate('limitations')} onEnter={() => void login()} />;
+  if (screen === 'login' || !state || !form) return <LoginScreen theme={theme} onTheme={toggleTheme} hydrated={hydrated} busy={busy === 'login'} onEnter={() => void login()} onBrowse={(query = '') => { setServiceQuery(query); navigate('services'); }} onReviewer={() => navigate('reviewer')} onEvidence={() => navigate('evidence')} onLimitations={() => navigate('limitations')} error={error} sessionExpired={sessionExpired} hasLocalRecovery={hasLocalRecovery} storageReady={storageReady} />;
 
   return (
     <div className="app-shell">
@@ -725,43 +725,100 @@ function ThemeToggle({ theme, onTheme, ready = true }: { theme: Theme; onTheme: 
   return <button type="button" className="theme-toggle" onClick={onTheme} disabled={!ready} aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} aria-pressed={theme === 'dark'}><span aria-hidden="true">{theme === 'light' ? '☾' : '☀'}</span><span>{theme === 'light' ? 'Dark' : 'Light'}</span></button>;
 }
 
-function LoginScreen({ theme, onTheme, hydrated, busy, onEnter, onReviewer, onLimitations, error, sessionExpired, hasLocalRecovery, storageReady }: { theme: Theme; onTheme: () => void; hydrated: boolean; busy: boolean; onEnter: () => void; onReviewer: () => void; onLimitations: () => void; error: DarjError | null; sessionExpired: boolean; hasLocalRecovery: boolean; storageReady: boolean }) {
+const HOME_ACTIONS = [
+  ['File annual accounts', 'AOC-4', 'working'],
+  ['Register a company', 'company incorporation', 'catalogue'],
+  ['Register an LLP', 'LLP incorporation', 'catalogue'],
+  ['Update director details', 'DIR-3 KYC', 'catalogue'],
+  ['View company master data', 'company master data', 'catalogue'],
+  ['Track a transaction', 'track transaction', 'catalogue'],
+  ['Access public documents', 'certified copy', 'catalogue'],
+  ['Calculate filing fees', 'fee enquiry', 'catalogue'],
+] as const;
+
+const HOME_SERVICE_GROUPS = [
+  ['Company registration and name reservation', 'SPICe+ · RUN', 'company incorporation', 'Service catalogue'],
+  ['LLP registration and services', 'FiLLiP · RUN-LLP', 'LLP incorporation', 'Service catalogue'],
+  ['Annual company filings', 'AOC-4 · MGT-7', 'AOC-4', 'Working demo'],
+  ['Directors, DIN and DSC', 'DIR-3 KYC · DIR-12', 'director', 'Service catalogue'],
+  ['Charges and company changes', 'CHG-1 · INC-22', 'charge company change', 'Service catalogue'],
+  ['Company and LLP master data', 'Public registry information', 'master data', 'Service catalogue'],
+  ['Public documents and certified copies', 'Inspection · certified copy', 'public documents', 'Service catalogue'],
+  ['Fees, payments and transaction tracking', 'Fee enquiry · status', 'payment tracking', 'Service catalogue'],
+] as const;
+
+const SEARCH_SUGGESTIONS = ['AOC-4', 'MGT-7', 'DIR-3 KYC', 'Company master data', 'Track transaction'] as const;
+
+function LoginScreen({ theme, onTheme, hydrated, busy, onEnter, onBrowse, onReviewer, onEvidence, onLimitations, error, sessionExpired, hasLocalRecovery, storageReady }: { theme: Theme; onTheme: () => void; hydrated: boolean; busy: boolean; onEnter: () => void; onBrowse: (query?: string) => void; onReviewer: () => void; onEvidence: () => void; onLimitations: () => void; error: DarjError | null; sessionExpired: boolean; hasLocalRecovery: boolean; storageReady: boolean }) {
+  const [searchQuery, setSearchQuery] = useState('');
+  const [registryQuery, setRegistryQuery] = useState('');
+  const [registrySearched, setRegistrySearched] = useState(false);
+  const [languageNote, setLanguageNote] = useState(false);
+  const enterLabel = !hydrated || busy ? 'Preparing workspace…' : 'Open sample company workspace';
   return (
-    <main className="login-shell">
-      <button className="prototype-strip disclosure-button" onClick={onLimitations}>INDEPENDENT MCA21 FILING WORKSPACE · SAMPLE DATA · NOT AFFILIATED WITH MCA</button>
-      <header className="login-header">
-        <Wordmark />
-        <nav className="login-nav" aria-label="Public navigation"><button onClick={onReviewer}>Reviewer guide</button><button onClick={onLimitations}>About this workspace</button><ThemeToggle theme={theme} onTheme={onTheme} ready={hydrated} /></nav>
+    <main className="registry-home" id="main-content">
+      <div className="india-rule" aria-hidden="true"><span /><span /><span /></div>
+      <button className="registry-disclaimer" onClick={onLimitations}>Synthetic data · Independent prototype · Not affiliated with the Ministry of Corporate Affairs</button>
+      <header className="registry-identity-header">
+        <div className="registry-title-block"><div className="registry-monogram" aria-hidden="true">21</div><div><h1>MCA21 Corporate Services</h1><p>DARJ / <span lang="hi">दर्ज</span> · Independent Redesign Concept</p></div></div>
+        <nav className="registry-utilities" aria-label="Public utilities">
+          <button onClick={() => setLanguageNote((current) => !current)}>English / हिंदी</button>
+          <button onClick={onTheme} disabled={!hydrated}>Accessibility · {theme === 'light' ? 'Dark mode' : 'Light mode'}</button>
+          <button onClick={onEvidence}>Help</button>
+          <button onClick={onReviewer}>Reviewer Guide</button>
+          <button className="utility-signin" onClick={onEnter} disabled={!hydrated || busy}>Sign In</button>
+        </nav>
       </header>
+      <section className="operational-notice" aria-label="Environment status"><span className="status-mark durable" /><strong>Demo environment operational</strong><span>Explore the sample company or prepare a synthetic AOC-4 filing.</span></section>
+      {languageNote && <div className="registry-language-note" role="status">This review build uses English interface copy with Hindi identity labelling. Full Hindi localisation is outside the current scope.</div>}
 
-      <section className="login-hero" aria-labelledby="login-title">
-        <div className="login-intro">
-          <p className="eyebrow">MCA21 FILING, MADE CLEAR</p>
-          <h1 id="login-title">File with confidence. Keep proof of every step.</h1>
-          <p className="login-deck">Prepare company filings, verify every attachment and follow the exact package from draft to outcome. If a tab closes or a response is lost, your record stays clear.</p>
-          <div className="login-cta-row"><button className="primary" onClick={onEnter} disabled={!hydrated || busy}>{!hydrated || busy ? 'Preparing workspace…' : 'Enter Meet’s filing'} <span aria-hidden="true">→</span></button><button className="secondary" onClick={onReviewer}>See the 5-minute reviewer path</button></div>
-          <ul className="login-trust" aria-label="Workspace safeguards"><li><span>✓</span>Draft recovery</li><li><span>✓</span>Verified attachments</li><li><span>✓</span>Durable receipts</li></ul>
+      <section className="command-centre" aria-labelledby="login-title">
+        <div className="command-main">
+          <p className="eyebrow">WHAT DO YOU NEED TO DO?</p>
+          <h2 id="login-title">Corporate filings, company records and transaction status—in one clear workspace.</h2>
+          <form className="command-search" role="search" onSubmit={(event) => { event.preventDefault(); onBrowse(searchQuery); }}>
+            <label htmlFor="public-service-search">Search services, forms, companies or transaction references</label>
+            <span aria-hidden="true">⌕</span>
+            <input id="public-service-search" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search services, forms, companies or transaction references" />
+            <button type="submit">Search</button>
+          </form>
+          <div className="search-suggestions" aria-label="Suggested searches"><span>Try</span>{SEARCH_SUGGESTIONS.map((suggestion) => <button key={suggestion} onClick={() => onBrowse(suggestion)}>{suggestion}</button>)}</div>
+          <div className="quick-actions" aria-label="Popular services">{HOME_ACTIONS.map(([label, query, availability], index) => <button key={label} className={index === 0 ? 'working' : ''} onClick={availability === 'working' ? onEnter : () => onBrowse(query)}><span className="mono">{String(index + 1).padStart(2, '0')}</span><strong>{label}</strong><span aria-hidden="true">→</span></button>)}</div>
         </div>
-        <div className="login-hero-visual" role="img" aria-label="A company professional preparing a filing at a desk"><div className="hero-proof-card"><span className="status-mark durable" /><div><strong>Work safely recorded</strong><small>Draft 17 · synced just now</small></div></div></div>
+        <aside className="review-access" aria-labelledby="review-access-title">
+          <div className="review-access-head"><span className="status-mark durable" /><span>Synthetic environment</span></div>
+          <h2 id="review-access-title">Reviewer access</h2>
+          <dl><div><dt>Sample user</dt><dd>Meet Vekaria</dd></div><div><dt>Fictional company</dt><dd>Aster Components Private Limited</dd></div><div><dt>In progress</dt><dd>AOC-4 · Draft 17</dd></div></dl>
+          <button className="primary" type="button" onClick={onEnter} disabled={!hydrated || busy}>{enterLabel} <span aria-hidden="true">→</span></button>
+          <button className="review-browse" type="button" onClick={() => onBrowse()}>Browse without signing in</button>
+          <small>No OTP or personal information required.</small>
+        </aside>
       </section>
 
-      <section className="login-access-band" aria-label="Reviewer access">
-        <div><span className="access-status"><i /> Workspace ready</span><h2>Continue as Meet Vekaria</h2><p>A prefilled company workspace with sample records. No OTP, installation or sensitive information.</p></div>
-        <div className="access-credential"><span>Account</span><strong>meet@darj.demo</strong></div>
-        <button className="primary" type="button" onClick={onEnter} disabled={!hydrated || busy}>{!hydrated || busy ? 'Preparing workspace…' : 'Open workspace'} <span aria-hidden="true">→</span></button>
+      <section className="registry-stats" aria-label="Synthetic platform data">
+        <article><strong>{STARTABLE_SERVICES.length} working filing journeys</strong><span>Demo data · 1 end to end and 4 guided intakes</span></article>
+        <article><strong>1 sample company</strong><span>Synthetic environment · clearly fictional</span></article>
+        <article><strong>3 verified documents</strong><span>Demo data · seeded PDF records</span></article>
+        <article><strong><i className="status-mark durable" />All demo systems operational</strong><span>Synthetic environment · ready to review</span></article>
       </section>
 
-      {sessionExpired && hasLocalRecovery && <div className="recovery-callout login-alert" role="status"><strong>Your local work is safe.</strong><p>Open the workspace to resume the same filing and last focused field.</p></div>}
-      {!storageReady && <div className="error-panel login-alert" role="alert"><strong>Local storage is unavailable</strong><p>Edits are paused until browser storage is available. Public evidence and limitations remain accessible.</p></div>}
-      {error && <div className="login-alert"><ErrorPanel error={error} /></div>}
+      {(sessionExpired && hasLocalRecovery) && <div className="recovery-callout registry-alert" role="status"><strong>Your local work is safe.</strong><p>Open the sample company workspace to resume the filing and last focused field.</p></div>}
+      {!storageReady && <div className="error-panel registry-alert" role="alert"><strong>Local storage is unavailable</strong><p>Edits are paused until browser storage is available. Public services and guidance remain accessible.</p></div>}
+      {error && <div className="registry-alert"><ErrorPanel error={error} /></div>}
 
-      <section className="login-capabilities" aria-labelledby="capabilities-title"><div className="section-kicker"><p className="eyebrow">BUILT AROUND THE FILING JOURNEY</p><h2 id="capabilities-title">Less uncertainty from first field to final status.</h2></div><div className="capability-grid"><article><span>01</span><h3>Save work before it disappears</h3><p>Local-first drafts recover after a closed tab, then reconcile with the server.</p></article><article><span>02</span><h3>Know exactly what was filed</h3><p>Verified documents and normalised form data become one sealed package.</p></article><article><span>03</span><h3>Follow every outcome</h3><p>Receipt, payment, processing and acceptance stay separate and understandable.</p></article></div></section>
+      <section className="home-section public-services" aria-labelledby="public-services-title"><div className="home-section-heading"><div><p className="eyebrow">SERVICES</p><h2 id="public-services-title">What do you need to do?</h2></div><p>Find common corporate registry tasks by purpose. Capability labels show what works in this independent environment.</p></div><div className="public-service-grid">{HOME_SERVICE_GROUPS.map(([title, detail, query, label], index) => <button key={title} onClick={label === 'Working demo' ? onEnter : () => onBrowse(query)}><span className="mono">{String(index + 1).padStart(2, '0')}</span><h3>{title}</h3><p>{detail}</p><strong className={label === 'Working demo' ? 'working-label' : ''}>{label} <span aria-hidden="true">→</span></strong></button>)}</div></section>
 
-      <section className="login-story-grid" aria-label="DARJ filing experience"><article className="story-image"><Image src="/images/darj-guided-filing.png" alt="Two company professionals reviewing a filing checklist together" width={1536} height={1024} /></article><article className="story-copy"><p className="eyebrow">GUIDED, NOT OVERWHELMING</p><h2>Start with the service you need.</h2><p>Choose AOC-4, MGT-7, DIR-3 KYC, DIR-12 or CHG-1. DARJ collects only the essentials, shows what comes next and preserves the intake.</p><button className="text-button" onClick={onEnter}>Explore available services <span aria-hidden="true">→</span></button></article><article className="story-copy"><p className="eyebrow">A RECORD YOU CAN EXPLAIN</p><h2>Every document has a place and a fingerprint.</h2><p>Attachment checks, timestamps and package hashes make it easier to answer what changed and when.</p><button className="text-button" onClick={onReviewer}>Open reviewer guide <span aria-hidden="true">→</span></button></article><article className="story-image"><Image src="/images/darj-verified-records.png" alt="An organised filing desk with verified company records" width={1536} height={1024} /></article></section>
+      <section className="home-section company-snapshot" aria-labelledby="sample-company-title"><div className="company-summary"><p className="eyebrow">FICTIONAL SAMPLE COMPANY</p><h2 id="sample-company-title">Aster Components Private Limited</h2><p className="company-cin">CIN (fictional) · DARJ-CIN-000117</p><dl><div><dt>Status</dt><dd><span className="status-mark durable" />Active in sample data</dd></div><div><dt>Registered office</dt><dd>Ahmedabad, Gujarat</dd></div><div><dt>Next compliance deadline</dt><dd>30 September 2026 · illustrative</dd></div></dl><button className="primary" onClick={onEnter}>Open company workspace <span aria-hidden="true">→</span></button></div><div className="company-progress"><div><span>AOC-4 draft progress</span><strong>Draft 17 · 3 of 3 documents ready</strong><div className="progress-rule" role="progressbar" aria-label="AOC-4 sample filing progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={75}><i /></div></div><div><span>Verified attachments</span><strong>Financial statements · Auditor report · Board report</strong></div><div><span>Latest filing activity</span><strong>Company master snapshot 7 pinned for provenance</strong></div></div></section>
 
-      <footer className="login-footer"><Wordmark compact /><p>DARJ is an independent workspace for exploring MCA21 filing reliability. It does not connect to MCA21 or make statutory filings.</p><nav aria-label="Login footer"><button onClick={onReviewer}>Reviewer guide</button><button onClick={onLimitations}>Limitations</button></nav></footer>
+      <section className="home-section home-information-grid"><div className="notices-panel"><div className="home-section-heading compact"><div><p className="eyebrow">NOTICES</p><h2>Service updates</h2></div></div><div className="notice-list"><button onClick={onEnter}><span>26 AUG 2026</span><strong>Annual filing demonstration available</strong><small>Open the seeded AOC-4 workspace.</small></button><button onClick={onReviewer}><span>26 AUG 2026</span><strong>Synthetic payment-failure recovery scenario</strong><small>See callback reconciliation without duplicate payment.</small></button><button onClick={onEvidence}><span>26 AUG 2026</span><strong>New document verification and receipt trail</strong><small>Review hashes, custody and event evidence.</small></button></div></div><div className="public-registry-panel"><p className="eyebrow">PUBLIC REGISTRY SEARCH</p><h2>Preview a company record</h2><p>This search returns fictional data only. It does not query MCA21.</p><form onSubmit={(event) => { event.preventDefault(); setRegistrySearched(true); }}><label htmlFor="registry-preview-search">Company name or fictional CIN</label><div><input id="registry-preview-search" value={registryQuery} onChange={(event) => { setRegistryQuery(event.target.value); setRegistrySearched(false); }} placeholder="Try Aster Components" /><button type="submit">Find company</button></div></form>{registrySearched && <button className="registry-result" onClick={onEnter}><span className="status-mark durable" /><span><strong>Aster Components Private Limited</strong><small>DARJ-CIN-000117 · Ahmedabad · Fictional record</small></span><span aria-hidden="true">→</span></button>}</div></section>
+
+      <footer className="registry-footer"><div><Wordmark compact /><p>Independent redesign concept for exploring reliable MCA21 statutory filing journeys.</p></div><nav aria-label="Homepage footer"><button onClick={onReviewer}>Reviewer Guide</button><button onClick={onEvidence}>Evidence</button><button onClick={onLimitations}>Limitations and data source</button></nav><p>DARJ does not connect to MCA21 or make statutory filings.</p></footer>
     </main>
   );
+}
+
+function PublicServicesScreen({ theme, onTheme, query, category, selectedKey, onQuery, onCategory, onSelect, onHome, onReviewer, onLimitations, onEnter }: { theme: Theme; onTheme: () => void; query: string; category: string; selectedKey: string; onQuery: (value: string) => void; onCategory: (value: string) => void; onSelect: (key: string) => void; onHome: () => void; onReviewer: () => void; onLimitations: () => void; onEnter: () => void }) {
+  return <main className="public-directory-shell" id="main-content"><button className="registry-disclaimer public-directory-disclaimer" onClick={onLimitations}>Synthetic data · Independent prototype · Not affiliated with the Ministry of Corporate Affairs</button><header className="public-directory-header"><button className="brand-button" onClick={onHome} aria-label="DARJ home"><Wordmark /></button><nav aria-label="Public directory navigation"><button className="text-button" onClick={onHome}>Home</button><button className="text-button" onClick={onReviewer}>Reviewer Guide</button><ThemeToggle theme={theme} onTheme={onTheme} /><button className="secondary small" onClick={onEnter}>Sign In</button></nav></header><ServiceDirectoryScreen query={query} category={category} selectedKey={selectedKey} onQuery={onQuery} onCategory={onCategory} onSelect={onSelect} onOpenWorking={onEnter} onStart={onEnter} /><footer className="registry-footer"><div><Wordmark compact /><p>Browse the service map without signing in. Working journeys use only synthetic sample data.</p></div><nav><button onClick={onHome}>Home</button><button onClick={onLimitations}>Limitations</button></nav></footer></main>;
 }
 
 function AppHeader({ screen, state, theme, onTheme, serviceQuery, onServiceQuery, onNavigate, onSignOut, signingOut }: { screen: Screen; state: AppState; theme: Theme; onTheme: () => void; serviceQuery: string; onServiceQuery: (value: string) => void; onNavigate: (screen: Screen) => void; onSignOut: () => void; signingOut: boolean }) {

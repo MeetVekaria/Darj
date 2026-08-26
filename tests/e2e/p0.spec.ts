@@ -3,7 +3,7 @@ import { expect, test, type Page } from '@playwright/test';
 
 async function login(page: Page) {
   await page.goto('/login');
-  await page.getByRole('button', { name: /Enter Meet’s filing/i }).click();
+  await page.getByRole('button', { name: /Open sample company workspace/i }).click();
   await expect(page).toHaveURL(/\/filings$/);
   await expect(page.getByRole('heading', { name: /filing is/i })).toBeVisible();
 }
@@ -149,7 +149,7 @@ test('session expiry preserves and resumes the local draft', async ({ page }, te
   });
   await page.reload();
   await expect(page.getByText('Local work is safe')).toBeVisible();
-  await page.getByRole('button', { name: /Enter Meet’s filing/i }).click();
+  await page.getByRole('button', { name: /Open sample company workspace/i }).click();
   await expect(page).toHaveURL(/\/prepare$/);
   await expect(page.getByLabel('Board meetings')).toHaveValue('5');
 });
@@ -214,7 +214,7 @@ test('security headers, cookie boundaries, and CSRF rejection protect mutations'
   expect(response?.headers()['content-security-policy']).toContain("default-src 'self'");
   expect(response?.headers()['x-frame-options']).toBe('DENY');
   expect(response?.headers()['x-content-type-options']).toBe('nosniff');
-  await page.getByRole('button', { name: /Enter Meet’s filing/i }).click();
+  await page.getByRole('button', { name: /Open sample company workspace/i }).click();
   await expect(page).toHaveURL(/\/filings$/);
   const cookies = await page.context().cookies();
   expect(cookies.find((cookie) => cookie.name === 'darj_demo_run')).toMatchObject({ httpOnly: true, sameSite: 'Strict' });

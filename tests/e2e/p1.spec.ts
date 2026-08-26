@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 
 async function login(page: Page) {
   await page.goto('/login');
-  await page.getByRole('button', { name: /Enter Meet’s filing/i }).click();
+  await page.getByRole('button', { name: /Open sample company workspace/i }).click();
   await expect(page).toHaveURL(/\/filings$/);
 }
 
@@ -114,7 +114,7 @@ test('sign out clears the authenticated cookies and keeps recoverable local work
   await expect(page.getByText('Saved locally · Synced').first()).toBeVisible();
   await page.getByRole('button', { name: 'Sign out' }).first().click();
   await expect(page).toHaveURL(/\/login$/);
-  await expect(page.getByRole('button', { name: /Enter Meet’s filing/i })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Open sample company workspace/i })).toBeVisible();
   const cookies = await page.context().cookies();
   expect(cookies.some((cookie) => ['darj_demo_run', 'darj_csrf'].includes(cookie.name))).toBe(false);
   const local = await page.evaluate(() => new Promise<unknown>((resolve, reject) => {
