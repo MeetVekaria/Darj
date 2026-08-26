@@ -1,9 +1,10 @@
 import { env } from 'cloudflare:workers';
 import { NextResponse } from 'next/server';
 import { canonicalize, sha256Hex } from '@/lib/canonical';
-import { MAX_DEMO_PDF_BYTES, sniffDemoPdf } from '@/lib/pdf';
+import { buildDarjReceiptPdf, buildTextPdf, MAX_DEMO_PDF_BYTES, sniffDemoPdf } from '@/lib/pdf';
 import { containsRealLookingSensitiveIdentifier } from '@/lib/security';
 import { signPackageHash, verifyPackageSignature } from '@/lib/demo-signature.server';
+import { emptyStudioState, extractStudioState, validateStudioEvidence, type StudioRole, type StudioScenario, type StudioState } from '@/lib/guided-filing';
 
 export const dynamic = 'force-dynamic';
 
@@ -69,11 +70,21 @@ const SCHEMA = [
     note TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
     PRIMARY KEY (run_id, filing_id)
   )`,
+  `CREATE TABLE IF NOT EXISTS guided_filing_sessions (
+    run_id TEXT NOT NULL, case_id TEXT NOT NULL, state_json TEXT NOT NULL, updated_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, case_id)
+  )`,
   `CREATE TABLE IF NOT EXISTS attachments (
     run_id TEXT NOT NULL, case_id TEXT NOT NULL, slot TEXT NOT NULL,
     filename TEXT NOT NULL, object_key TEXT NOT NULL UNIQUE, bytes INTEGER NOT NULL,
     mime TEXT NOT NULL, sha256 TEXT NOT NULL, verified_at TEXT NOT NULL,
     PRIMARY KEY (run_id, case_id, slot)
+  )`,
+  `CREATE TABLE IF NOT EXISTS attachment_versions (
+    run_id TEXT NOT NULL, case_id TEXT NOT NULL, slot TEXT NOT NULL, version INTEGER NOT NULL,
+    filename TEXT NOT NULL, object_key TEXT NOT NULL UNIQUE, bytes INTEGER NOT NULL,
+    mime TEXT NOT NULL, sha256 TEXT NOT NULL, verified_at TEXT NOT NULL,
+    PRIMARY KEY (run_id, case_id, slot, version)
   )`,
   `CREATE TABLE IF NOT EXISTS upload_sessions (
     run_id TEXT NOT NULL, upload_id TEXT NOT NULL, case_id TEXT NOT NULL, slot TEXT NOT NULL,
@@ -163,13 +174,15 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS idx_events_case ON case_events(run_id, case_id, seq)`,
   `CREATE INDEX IF NOT EXISTS idx_jobs_state ON processing_jobs(run_id, state, available_at)`,
   `CREATE INDEX IF NOT EXISTS idx_upload_slot ON upload_sessions(run_id, case_id, slot, state)`,
+  `CREATE INDEX IF NOT EXISTS idx_attachment_versions_slot ON attachment_versions(run_id, case_id, slot, version DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_service_drafts_run_updated ON service_drafts(run_id, updated_at DESC)`,
+  `CREATE INDEX IF NOT EXISTS idx_guided_filing_updated ON guided_filing_sessions(run_id, updated_at DESC)`,
 ];
 
 type FormDataShape = typeof INITIAL_FORM;
 type JsonBody = Record<string, unknown>;
 type DatabaseRow = Record<string, unknown>;
-type AttachmentRow = { slot: string; filename: string; objectKey: string; bytes: number; mime: string; sha256: string; verifiedAt: string };
+type AttachmentRow = { slot: string; version: number; filename: string; objectKey: string; bytes: number; mime: string; sha256: string; verifiedAt: string };
 type SeedDocument = { slot: string; filename: string; objectKey: string; bytes: Uint8Array; hash: string };
 type ValidationCheck = {
   code: string; stage: string; fieldPath: string | null; documentSlot: string | null;
@@ -182,6 +195,8 @@ export async function GET(request: Request) {
   const runId = readRunId(request);
   if (!runId) return errorResponse('DARJ_AUTH_REQUIRED', 'LOGIN', 'Enter the DARJ workspace to continue.', false, 401);
   if (!(await getRun(runId))) return errorResponse('DARJ_AUTH_REQUIRED', 'LOGIN', 'This review session has expired. Your local draft is unchanged.', true, 401);
+  const exportKind = new URL(request.url).searchParams.get('export');
+  if (exportKind) return exportStudioArtifact(runId, exportKind);
   return securedJson(await getState(runId));
 }
 
@@ -207,6 +222,8 @@ export async function POST(request: Request) {
     switch (action) {
       case 'saveDraft': return await saveDraft(runId, body);
       case 'startService': return await startService(runId, body);
+      case 'openStudio': return await openStudio(runId, body);
+      case 'updateStudio': return await updateStudio(runId, body);
       case 'jaanch': return await runJaanch(runId);
       case 'seal': return await sealPackage(runId);
       case 'sign': return await signPackage(runId);
@@ -267,7 +284,7 @@ async function login(body: JsonBody, request: Request) {
   const expires = new Date(now.getTime() + 24 * 60 * 60 * 1000);
   await env.DB.prepare('INSERT INTO demo_runs (run_id, created_at, expires_at) VALUES (?, ?, ?)').bind(runId, now.toISOString(), expires.toISOString()).run();
   const seeded = await seedRun(runId);
-  const response = securedJson(initialState(runId, seeded.savedAt, seeded.attachments));
+  const response = securedJson(initialState(runId, seeded.savedAt, seeded.attachments, seeded.studio));
   const secure = new URL(request.url).protocol === 'https:' ? '; Secure' : '';
   response.headers.append('Set-Cookie', `${COOKIE_NAME}=${encodeURIComponent(runId)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400${secure}`);
   response.headers.append('Set-Cookie', `${CSRF_COOKIE_NAME}=${encodeURIComponent(csrfToken)}; Path=/; SameSite=Strict; Max-Age=86400${secure}`);
@@ -298,12 +315,32 @@ async function consumeRateLimit(key: string, limit: number, windowMs: number): P
 
 async function buildSeedDocuments(runId: string): Promise<SeedDocument[]> {
   const files = [
-    ['financialStatements', 'DARJ-financial-statements.pdf', 'Demo financial statements'],
-    ['auditorReport', 'DARJ-auditor-report.pdf', 'Demo auditor report'],
-    ['boardReport', 'DARJ-board-report.pdf', 'Demo board report'],
+    ['financialStatements', 'DARJ-financial-statements.pdf', [
+      'Audited financial statements',
+      'DARJ_FIELD companyName=Aster Components Private Limited',
+      'DARJ_FIELD cin=DARJ-CIN-000117',
+      'DARJ_FIELD financialYear=2025-26',
+      'DARJ_FIELD revenue=124800000',
+      'DARJ_FIELD expenses=118250000',
+      'DARJ_FIELD netProfit=6550000',
+    ].join('\n')],
+    ['auditorReport', 'DARJ-auditor-report.pdf', [
+      'Independent auditor report',
+      'DARJ_FIELD companyName=Aster Components Private Limited',
+      'DARJ_FIELD financialYear=2025-26',
+      'DARJ_FIELD auditorName=K R Shah and Company, Chartered Accountants',
+    ].join('\n')],
+    ['boardReport', 'DARJ-board-report.pdf', [
+      'Board report and authorization',
+      'DARJ_FIELD companyName=Aster Components Private Limited',
+      'DARJ_FIELD financialYear=2025-26',
+      'DARJ_FIELD agmDate=2026-07-29',
+      'DARJ_FIELD boardMeetings=4',
+      'DARJ_FIELD directorName=Meet Vekaria',
+    ].join('\n')],
   ] as const;
-  return Promise.all(files.map(async ([slot, filename, title]) => {
-    const bytes = new TextEncoder().encode(`%PDF-1.4\n% DARJ demo document\n1 0 obj<</Type/Catalog>>endobj\n% ${title}\n%%EOF`);
+  return Promise.all(files.map(async ([slot, filename, content]) => {
+    const bytes = new TextEncoder().encode(`%PDF-1.4\n% DARJ fictional filing document\n1 0 obj<</Type/Catalog>>endobj\n${content}\n%%EOF`);
     return { slot, filename, objectKey: `demo/${runId}/${CASE_ID}/${slot}.pdf`, bytes, hash: await sha256Hex(bytes) };
   }));
 }
@@ -311,26 +348,32 @@ async function buildSeedDocuments(runId: string): Promise<SeedDocument[]> {
 async function seedRun(runId: string) {
   const savedAt = new Date().toISOString();
   const documents = await buildSeedDocuments(runId);
+  const studio = emptyStudioState(savedAt);
   await env.DB.batch([
     env.DB.prepare(`INSERT INTO draft_snapshots (run_id, case_id, version, base_version, form_json, changed_paths, saved_at) VALUES (?, ?, 17, 16, ?, ?, ?)`)
       .bind(runId, CASE_ID, JSON.stringify(INITIAL_FORM), JSON.stringify([]), savedAt),
     env.DB.prepare(`INSERT INTO case_master_state (run_id, case_id, pinned_version, pinned_office, current_version, current_office, source, review_state)
       VALUES (?, ?, 7, ?, 7, ?, 'Sample company master', 'CURRENT')`)
       .bind(runId, CASE_ID, INITIAL_FORM.registeredOffice, INITIAL_FORM.registeredOffice),
+    env.DB.prepare(`INSERT INTO guided_filing_sessions (run_id, case_id, state_json, updated_at) VALUES (?, ?, ?, ?)`)
+      .bind(runId, CASE_ID, JSON.stringify(studio), savedAt),
     ...documents.map((document) => env.DB.prepare(`INSERT INTO attachments (run_id, case_id, slot, filename, object_key, bytes, mime, sha256, verified_at) VALUES (?, ?, ?, ?, ?, ?, 'application/pdf', ?, ?)`)
+      .bind(runId, CASE_ID, document.slot, document.filename, document.objectKey, document.bytes.byteLength, document.hash, savedAt)),
+    ...documents.map((document) => env.DB.prepare(`INSERT INTO attachment_versions (run_id, case_id, slot, version, filename, object_key, bytes, mime, sha256, verified_at) VALUES (?, ?, ?, 1, ?, ?, ?, 'application/pdf', ?, ?)`)
       .bind(runId, CASE_ID, document.slot, document.filename, document.objectKey, document.bytes.byteLength, document.hash, savedAt)),
   ]);
   return {
-    savedAt,
-    attachments: documents.map((document) => ({ slot: document.slot, filename: document.filename, objectKey: document.objectKey, bytes: document.bytes.byteLength, mime: 'application/pdf', sha256: document.hash, verifiedAt: savedAt })),
+    savedAt, studio,
+    attachments: documents.map((document) => ({ slot: document.slot, version: 1, filename: document.filename, objectKey: document.objectKey, bytes: document.bytes.byteLength, mime: 'application/pdf', sha256: document.hash, verifiedAt: savedAt })),
   };
 }
 
-function initialState(runId: string, savedAt: string, attachments: AttachmentRow[]) {
+function initialState(runId: string, savedAt: string, attachments: AttachmentRow[], studio = emptyStudioState(savedAt)) {
   return {
     runId, caseId: CASE_ID,
     draft: { version: 17, form: INITIAL_FORM, savedAt },
-    attachments: attachments.map((attachment) => ({ slot: attachment.slot, filename: attachment.filename, bytes: attachment.bytes, mime: attachment.mime, sha256: attachment.sha256, verifiedAt: attachment.verifiedAt })),
+    attachments: attachments.map((attachment) => ({ slot: attachment.slot, version: attachment.version, filename: attachment.filename, bytes: attachment.bytes, mime: attachment.mime, sha256: attachment.sha256, verifiedAt: attachment.verifiedAt })),
+    attachmentVersions: attachments.map((attachment) => ({ slot: attachment.slot, version: attachment.version, filename: attachment.filename, bytes: attachment.bytes, mime: attachment.mime, sha256: attachment.sha256, verifiedAt: attachment.verifiedAt, current: true })),
     package: null, packageCurrent: false,
     signature: null, signatureValid: false,
     receipt: null, payment: null, processingJob: null,
@@ -340,7 +383,7 @@ function initialState(runId: string, savedAt: string, attachments: AttachmentRow
       currentVersion: 7, currentOffice: INITIAL_FORM.registeredOffice,
       source: 'Sample company master', reviewState: 'CURRENT', detectedAt: null, reviewedAt: null,
     },
-    correction: null, lineage: [], features: featureFlags(), events: [], serviceDrafts: [],
+    correction: null, lineage: [], features: featureFlags(), events: [], serviceDrafts: [], studio,
   };
 }
 
@@ -387,6 +430,188 @@ async function startService(runId: string, body: JsonBody) {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(runId, filingId, formCode, title, financialYear, applicantName, note, status, now, now).run();
   return securedJson({ filing: { filingId, formCode, title, financialYear, applicantName, note, status, createdAt: now, updatedAt: now } });
+}
+
+async function readStudioDocuments(runId: string) {
+  const attachments = await getAttachments(runId);
+  const seeded = await buildSeedDocuments(runId);
+  const documents: Record<string, string> = {};
+  for (const attachment of attachments) {
+    const object = await env.FILES.get(attachment.objectKey);
+    if (!object) {
+      const seed = seeded.find((item) => item.objectKey === attachment.objectKey);
+      if (seed) {
+        await env.FILES.put(seed.objectKey, seed.bytes, { httpMetadata: { contentType: 'application/pdf' } });
+        documents[attachment.slot] = new TextDecoder().decode(seed.bytes);
+        continue;
+      }
+    }
+    if (object) documents[attachment.slot] = new TextDecoder().decode(await object.arrayBuffer());
+  }
+  return documents;
+}
+
+async function getStudioState(runId: string): Promise<StudioState> {
+  const row = await env.DB.prepare('SELECT state_json FROM guided_filing_sessions WHERE run_id = ? AND case_id = ?').bind(runId, CASE_ID).first();
+  if (!row) return emptyStudioState(new Date().toISOString());
+  try { return JSON.parse(String(row.state_json)) as StudioState; }
+  catch { return emptyStudioState(new Date().toISOString()); }
+}
+
+async function saveStudioState(runId: string, studio: StudioState) {
+  studio.updatedAt = new Date().toISOString();
+  await env.DB.prepare(`INSERT INTO guided_filing_sessions (run_id, case_id, state_json, updated_at) VALUES (?, ?, ?, ?)
+    ON CONFLICT(run_id, case_id) DO UPDATE SET state_json=excluded.state_json, updated_at=excluded.updated_at`)
+    .bind(runId, CASE_ID, JSON.stringify(studio), studio.updatedAt).run();
+}
+
+async function openStudio(runId: string, body: JsonBody) {
+  const scenario: StudioScenario = body.scenario === 'conflict' ? 'conflict' : 'clean';
+  const now = new Date().toISOString();
+  const studio = extractStudioState(scenario, now, await readStudioDocuments(runId));
+  if (typeof body.serviceNeed === 'string') studio.serviceNeed = body.serviceNeed.trim().slice(0, 240);
+  await saveStudioState(runId, studio);
+  await appendUniqueEvent(runId, 'DOCUMENT_EXTRACTION_STARTED', 'Meet, company preparer', `Opened the ${scenario} guided AOC-4 document package.`);
+  return securedJson({ studio });
+}
+
+function addStudioTimeline(studio: StudioState, id: string, label: string, detail: string, actor: string) {
+  const event = { id, label, detail, actor, occurredAt: new Date().toISOString(), packageVersion: 'Draft v17' };
+  studio.timeline = [...studio.timeline.filter((item) => item.id !== id), event];
+}
+
+async function updateStudio(runId: string, body: JsonBody) {
+  const studio = await getStudioState(runId);
+  const operation = typeof body.operation === 'string' ? body.operation : '';
+  if (operation === 'setRole') {
+    const allowed: StudioRole[] = ['Company preparer', 'CA/CS/CMA reviewer', 'Authorized signatory'];
+    if (!allowed.includes(body.role as StudioRole)) throw new Error('DARJ_STUDIO_UPDATE_INVALID|Choose one of the available review roles.');
+    studio.activeRole = body.role as StudioRole;
+  } else if (operation === 'setNeed') {
+    studio.serviceNeed = typeof body.value === 'string' ? body.value.trim().slice(0, 240) : '';
+    studio.stage = 'GUIDE';
+  } else if (operation === 'advance') {
+    const allowed = new Set(['GUIDE', 'DOCUMENTS', 'EXTRACTED', 'REVIEW']);
+    if (!allowed.has(String(body.stage))) throw new Error('DARJ_STUDIO_UPDATE_INVALID|That guided filing stage is unavailable.');
+    studio.stage = body.stage as StudioState['stage'];
+  } else if (operation === 'answer') {
+    const key = typeof body.key === 'string' ? body.key.slice(0, 60) : '';
+    const value = typeof body.value === 'string' ? body.value.trim().slice(0, 240) : '';
+    if (!key || !value) throw new Error('DARJ_STUDIO_UPDATE_INVALID|Choose an answer before continuing.');
+    studio.answers[key] = value;
+    if (key === 'agmResolution') {
+      studio.evidence = studio.evidence.map((field) => field.id === 'agmDate' ? {
+        ...field,
+        value: value === 'authorization' ? '2026-07-31' : '2026-07-29',
+        confidence: 'MEDIUM',
+        ruleStatus: 'REVIEW',
+        decision: 'PENDING',
+        reviewerComment: `Company preparer selected the ${value === 'authorization' ? 'authorization record' : 'Board’s Report'} date.`,
+      } : field);
+      addStudioTimeline(studio, 'conflict-resolved', 'Conflict resolved', 'The AGM date was selected explicitly and remains flagged for professional confirmation.', 'Meet, company preparer');
+    }
+  } else if (operation === 'review') {
+    const fieldId = typeof body.fieldId === 'string' ? body.fieldId : '';
+    const decision = body.decision === 'edit' ? 'EDITED' : body.decision === 'clarify' ? 'CLARIFICATION' : 'ACCEPTED';
+    const comment = typeof body.comment === 'string' ? body.comment.trim().slice(0, 300) : '';
+    let found = false;
+    studio.evidence = studio.evidence.map((field) => {
+      if (field.id !== fieldId) return field;
+      found = true;
+      const proposed = decision === 'EDITED' && typeof body.value === 'string' ? body.value.trim().slice(0, 120) : field.value;
+      if (!proposed && decision !== 'CLARIFICATION') throw new Error('DARJ_STUDIO_UPDATE_INVALID|Resolve the source conflict before accepting this field.');
+      return {
+        ...field,
+        value: proposed,
+        edited: decision === 'EDITED',
+        decision,
+        reviewerComment: comment,
+        confidence: decision === 'CLARIFICATION' ? field.confidence : decision === 'EDITED' ? 'MEDIUM' : field.confidence === 'CONFLICTING' ? 'MEDIUM' : field.confidence,
+        ruleStatus: decision === 'CLARIFICATION' ? 'REVIEW' : 'PASSED',
+      };
+    });
+    if (!found) throw new Error('DARJ_STUDIO_UPDATE_INVALID|That extracted field could not be found.');
+    studio.stage = 'REVIEW';
+    addStudioTimeline(studio, 'review-progress', 'Professional review in progress', 'Source-linked fields now contain explicit reviewer decisions.', studio.activeRole);
+  } else if (operation === 'completeReview') {
+    studio.validations = validateStudioEvidence(studio.evidence);
+    if (studio.validations.some((check) => check.state === 'BLOCKING')) throw new Error('DARJ_STUDIO_BLOCKED|Resolve every blocking issue before completing professional review.');
+    if (!studio.evidence.some((field) => field.decision === 'ACCEPTED' || field.decision === 'EDITED')) throw new Error('DARJ_STUDIO_BLOCKED|Record at least one professional review decision before sealing.');
+    studio.stage = 'READY';
+    addStudioTimeline(studio, 'review-complete', 'Professional review completed', 'The reviewed evidence set is ready to become a versioned DARJ draft.', studio.activeRole);
+  } else {
+    throw new Error('DARJ_STUDIO_UPDATE_INVALID|That Guided Filing Studio operation is unavailable.');
+  }
+  studio.validations = validateStudioEvidence(studio.evidence);
+  await saveStudioState(runId, studio);
+  return securedJson({ studio });
+}
+
+async function exportStudioArtifact(runId: string, kind: string) {
+  const [studio, draft, attachments, packageRow, payment, processingJob] = await Promise.all([getStudioState(runId), latestDraft(runId), getAttachments(runId), latestPackage(runId), getPayment(runId), getProcessingJob(runId)]);
+  const form = draft ? JSON.parse(String(draft.form_json)) as FormDataShape : INITIAL_FORM;
+  const manifest = attachmentManifest(attachments);
+  const previewPackage = { schema: 'DARJ-AOC4-PACKAGE-2.0', caseId: CASE_ID, form, evidence: studio.evidence, attachments: manifest, review: studio.timeline, rulePack: 'DARJ-AOC4-RULES-2.0' };
+  const previewChecksum = await sha256Hex(new TextEncoder().encode(canonicalize(previewPackage)));
+  if (kind === 'receipt') {
+    const receipt = packageRow ? await getReceiptForPackage(runId, String(packageRow.package_id)) : null;
+    if (!receipt || !packageRow) return errorResponse('DARJ_RECEIPT_NOT_READY', 'SUBMISSION', 'The custody receipt is available after the exact package has been submitted.', true, 409);
+    const receivedAt = new Date(receipt.receivedAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'medium', timeZone: 'Asia/Kolkata' });
+    const bytes = buildDarjReceiptPdf({
+      receiptId: receipt.receiptId,
+      srn: receipt.srn,
+      custodyId: receipt.custodyId,
+      packageId: receipt.packageId,
+      packageVersion: Number(packageRow.version),
+      packageHash: receipt.packageHash,
+      receivedAt: `${receivedAt} IST`,
+      company: 'Aster Components Private Limited',
+      financialYear: form.financialYear,
+      paymentState: payment?.state ?? 'PENDING',
+      paymentReference: payment?.reconciliationReference ?? '',
+      amount: payment ? `INR ${(payment.amountPaise / 100).toFixed(2)}` : 'Illustrative fee pending',
+      processingState: processingJob?.state ?? 'WAITING',
+    });
+    return secureDownload(bytes, 'application/pdf', `${receipt.receiptId}.pdf`);
+  }
+  if (kind === 'preview' || kind === 'evidence') {
+    const lines = kind === 'preview' ? [
+      'Synthetic AOC-4 preview - not an official MCA form or filing receipt',
+      `Company: Aster Components Private Limited`,
+      `Fictional CIN: DARJ-CIN-000117`,
+      `Financial year: ${form.financialYear}`,
+      `AGM date: ${form.agmDate}`,
+      `Revenue: INR ${form.revenue}`,
+      `Expenses: INR ${form.expenses}`,
+      `Net profit: INR ${form.netProfit}`,
+      `Verified attachments: ${attachments.length}`,
+      `Preview checksum: ${previewChecksum}`,
+      'Professional certification and actual MCA submission are outside this prototype.',
+    ] : studio.evidence.flatMap((field) => [
+      `${field.label}: ${field.value || 'UNRESOLVED'} [${field.confidence}]`,
+      `Source: ${field.sourceDocument}, page ${field.page ?? '-'}, ${field.section}`,
+      `Evidence: ${field.evidence}`,
+    ]);
+    const bytes = buildTextPdf(kind === 'preview' ? 'DARJ AOC-4 filing preview' : 'DARJ field and source evidence report', lines);
+    return secureDownload(bytes, 'application/pdf', kind === 'preview' ? 'DARJ-synthetic-AOC4-preview.pdf' : 'DARJ-field-source-evidence.pdf');
+  }
+  const payload = kind === 'manifest' ? { schema: 'DARJ-ATTACHMENT-MANIFEST-1', caseId: CASE_ID, attachments: manifest, checksum: previewChecksum }
+    : kind === 'validation' ? { schema: 'DARJ-VALIDATION-REPORT-1', rulePack: 'DARJ-AOC4-RULES-2.0', checks: studio.validations }
+      : kind === 'review' ? { schema: 'DARJ-REVIEW-HISTORY-1', role: studio.activeRole, evidenceDecisions: studio.evidence.map(({ id, label, decision, edited, reviewerComment }) => ({ id, label, decision, edited, reviewerComment })), timeline: studio.timeline }
+        : { ...previewPackage, packageId: packageRow ? String(packageRow.package_id) : null, sealedPackageHash: packageRow ? String(packageRow.package_hash) : null, previewChecksum };
+  return secureDownload(new TextEncoder().encode(JSON.stringify(payload, null, 2)), 'application/json; charset=utf-8', `DARJ-${kind === 'package' ? 'machine-readable-package' : kind}-report.json`);
+}
+
+function secureDownload(bytes: Uint8Array, contentType: string, filename: string) {
+  const body = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength ? bytes.buffer : bytes.slice().buffer;
+  return new Response(body as ArrayBuffer, {
+    headers: {
+      'Cache-Control': 'no-store',
+      'Content-Type': contentType,
+      'Content-Disposition': `attachment; filename="${filename}"`,
+      'X-Content-Type-Options': 'nosniff',
+    },
+  });
 }
 
 function isValidForm(value: FormDataShape): boolean { return Object.keys(INITIAL_FORM).every((key) => typeof value[key as keyof FormDataShape] === 'string'); }
@@ -497,7 +722,7 @@ async function submitPackage(runId: string, body: JsonBody) {
         await env.DB.prepare('UPDATE demo_runs SET lose_submission = 0 WHERE run_id = ?').bind(runId).run();
         return errorResponse('DARJ_SUBMISSION_RETRY_SAFE', 'SUBMISSION', 'The response was lost after custody committed. Retrying the same request is safe.', true, 503);
       }
-      return securedJson({ receiptId, custodyId, packageId, packageHash: String(packageRow.package_hash), receivedAt, replayed: false });
+      return securedJson({ receiptId, srn: sampleSrnForReceipt(receiptId), custodyId, packageId, packageHash: String(packageRow.package_hash), receivedAt, replayed: false });
     } catch {
       const converged = await submissionReplay(runId, idempotencyKey, fingerprint, packageId);
       if (converged) return securedJson({ ...converged, replayed: true });
@@ -723,7 +948,7 @@ async function resetRun(runId: string) {
     if (listed.objects.length) await env.FILES.delete(listed.objects.map((object) => object.key));
     cursor = listed.truncated ? listed.cursor : undefined;
   } while (cursor);
-  const tables = ['fault_injections', 'case_events', 'processing_jobs', 'payment_attempts', 'payment_events', 'payment_intents', 'submission_attempts', 'receipts', 'custody_submissions', 'synthetic_signatures', 'package_lineage', 'correction_requests', 'filing_packages', 'upload_sessions', 'attachments', 'case_master_state', 'draft_snapshots', 'service_drafts'];
+  const tables = ['fault_injections', 'case_events', 'processing_jobs', 'payment_attempts', 'payment_events', 'payment_intents', 'submission_attempts', 'receipts', 'custody_submissions', 'synthetic_signatures', 'package_lineage', 'correction_requests', 'filing_packages', 'upload_sessions', 'attachment_versions', 'attachments', 'case_master_state', 'draft_snapshots', 'service_drafts', 'guided_filing_sessions'];
   await env.DB.batch(tables.map((table) => env.DB.prepare(`DELETE FROM ${table} WHERE run_id = ?`).bind(runId)));
   await env.DB.prepare('UPDATE demo_runs SET processor_paused = 0, lose_submission = 1, lose_payment = 1 WHERE run_id = ?').bind(runId).run();
   await seedRun(runId);
@@ -746,9 +971,15 @@ async function handleUpload(request: Request, runId: string) {
   const objectKey = `demo/${runId}/${CASE_ID}/${slot}-${crypto.randomUUID()}.pdf`;
   await env.FILES.put(objectKey, bytes, { httpMetadata: { contentType: 'application/pdf', contentDisposition: `attachment; filename="${file.name.replaceAll('"', '')}"` } });
   const now = new Date().toISOString();
-  await env.DB.prepare(`INSERT INTO attachments (run_id, case_id, slot, filename, object_key, bytes, mime, sha256, verified_at) VALUES (?, ?, ?, ?, ?, ?, 'application/pdf', ?, ?) ON CONFLICT(run_id, case_id, slot) DO UPDATE SET filename=excluded.filename, object_key=excluded.object_key, bytes=excluded.bytes, mime=excluded.mime, sha256=excluded.sha256, verified_at=excluded.verified_at`)
-    .bind(runId, CASE_ID, slot, file.name, objectKey, bytes.byteLength, hash, now).run();
-  return securedJson({ slot, filename: file.name, bytes: bytes.byteLength, mime: 'application/pdf', sha256: hash, verifiedAt: now });
+  const currentVersion = await env.DB.prepare('SELECT COALESCE(MAX(version), 0) AS version FROM attachment_versions WHERE run_id = ? AND case_id = ? AND slot = ?').bind(runId, CASE_ID, slot).first();
+  const version = Number(currentVersion?.version ?? 0) + 1;
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO attachment_versions (run_id, case_id, slot, version, filename, object_key, bytes, mime, sha256, verified_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'application/pdf', ?, ?)`)
+      .bind(runId, CASE_ID, slot, version, file.name, objectKey, bytes.byteLength, hash, now),
+    env.DB.prepare(`INSERT INTO attachments (run_id, case_id, slot, filename, object_key, bytes, mime, sha256, verified_at) VALUES (?, ?, ?, ?, ?, ?, 'application/pdf', ?, ?) ON CONFLICT(run_id, case_id, slot) DO UPDATE SET filename=excluded.filename, object_key=excluded.object_key, bytes=excluded.bytes, mime=excluded.mime, sha256=excluded.sha256, verified_at=excluded.verified_at`)
+      .bind(runId, CASE_ID, slot, file.name, objectKey, bytes.byteLength, hash, now),
+  ]);
+  return securedJson({ slot, version, filename: file.name, bytes: bytes.byteLength, mime: 'application/pdf', sha256: hash, verifiedAt: now });
 }
 
 async function verifyAttachments(runId: string): Promise<AttachmentRow[]> {
@@ -789,7 +1020,7 @@ async function isPackageCurrent(runId: string, row: DatabaseRow): Promise<boolea
 
 async function getState(runId: string) {
   const features = featureFlags();
-  const [draft, packageRow, run, uploadSessions, master, pauseUpload, correction, lineage, attachments, payment, processingJob, events, serviceDrafts] = await Promise.all([
+  const [draft, packageRow, run, uploadSessions, master, pauseUpload, correction, lineage, attachments, attachmentVersions, payment, processingJob, events, serviceDrafts, studio] = await Promise.all([
     latestDraft(runId),
     latestPackage(runId),
     getRun(runId),
@@ -799,10 +1030,12 @@ async function getState(runId: string) {
     features.correctionLineage ? getCorrectionState(runId) : Promise.resolve(null),
     features.correctionLineage ? getLineage(runId) : Promise.resolve([]),
     getAttachments(runId),
+    getAttachmentVersions(runId),
     getPayment(runId),
     getProcessingJob(runId),
     getEvents(runId),
     getServiceDrafts(runId),
+    getStudioState(runId),
   ]);
   const packageCurrent = Boolean(packageRow && draft && packageInputsMatch(packageRow, JSON.parse(String(draft.form_json)) as FormDataShape, attachments));
   const [signature, receipt] = await Promise.all([
@@ -813,7 +1046,8 @@ async function getState(runId: string) {
   return {
     runId, caseId: CASE_ID,
     draft: draft ? { version: Number(draft.version), form: JSON.parse(String(draft.form_json)) as FormDataShape, savedAt: String(draft.saved_at) } : null,
-    attachments: attachments.map((attachment) => ({ slot: attachment.slot, filename: attachment.filename, bytes: attachment.bytes, mime: attachment.mime, sha256: attachment.sha256, verifiedAt: attachment.verifiedAt })),
+    attachments: attachments.map((attachment) => ({ slot: attachment.slot, version: attachment.version, filename: attachment.filename, bytes: attachment.bytes, mime: attachment.mime, sha256: attachment.sha256, verifiedAt: attachment.verifiedAt })),
+    attachmentVersions,
     package: packageRow ? toPackage(packageRow) : null, packageCurrent,
     signature: signature ? toSignature(signature) : null, signatureValid,
     receipt, payment, processingJob,
@@ -826,6 +1060,7 @@ async function getState(runId: string) {
     features,
     events,
     serviceDrafts,
+    studio,
   };
 }
 
@@ -883,13 +1118,27 @@ async function getLineage(runId: string) {
 }
 
 async function getAttachments(runId: string): Promise<AttachmentRow[]> {
-  const result = await env.DB.prepare('SELECT slot, filename, object_key, bytes, mime, sha256, verified_at FROM attachments WHERE run_id = ? AND case_id = ? ORDER BY slot').bind(runId, CASE_ID).all();
-  return result.results.map((row) => ({ slot: String(row.slot), filename: String(row.filename), objectKey: String(row.object_key), bytes: Number(row.bytes), mime: String(row.mime), sha256: String(row.sha256), verifiedAt: String(row.verified_at) }));
+  const result = await env.DB.prepare(`SELECT a.slot, a.filename, a.object_key, a.bytes, a.mime, a.sha256, a.verified_at,
+    COALESCE((SELECT MAX(v.version) FROM attachment_versions v WHERE v.run_id = a.run_id AND v.case_id = a.case_id AND v.slot = a.slot), 1) AS version
+    FROM attachments a WHERE a.run_id = ? AND a.case_id = ? ORDER BY a.slot`).bind(runId, CASE_ID).all();
+  return result.results.map((row) => ({ slot: String(row.slot), version: Number(row.version), filename: String(row.filename), objectKey: String(row.object_key), bytes: Number(row.bytes), mime: String(row.mime), sha256: String(row.sha256), verifiedAt: String(row.verified_at) }));
+}
+
+async function getAttachmentVersions(runId: string) {
+  const result = await env.DB.prepare(`SELECT v.slot, v.version, v.filename, v.bytes, v.mime, v.sha256, v.verified_at,
+    CASE WHEN a.object_key = v.object_key THEN 1 ELSE 0 END AS current
+    FROM attachment_versions v LEFT JOIN attachments a ON a.run_id = v.run_id AND a.case_id = v.case_id AND a.slot = v.slot
+    WHERE v.run_id = ? AND v.case_id = ? ORDER BY v.slot, v.version DESC`).bind(runId, CASE_ID).all();
+  return result.results.map((row) => ({ slot: String(row.slot), version: Number(row.version), filename: String(row.filename), bytes: Number(row.bytes), mime: String(row.mime), sha256: String(row.sha256), verifiedAt: String(row.verified_at), current: Number(row.current) === 1 }));
 }
 
 async function getReceiptForPackage(runId: string, packageId: string) {
   const row = await env.DB.prepare('SELECT * FROM receipts WHERE run_id = ? AND package_id = ?').bind(runId, packageId).first();
-  return row ? { receiptId: String(row.receipt_id), custodyId: String(row.custody_id), packageId: String(row.package_id), packageHash: String(row.package_hash), receivedAt: String(row.received_at) } : null;
+  return row ? { receiptId: String(row.receipt_id), srn: sampleSrnForReceipt(String(row.receipt_id)), custodyId: String(row.custody_id), packageId: String(row.package_id), packageHash: String(row.package_hash), receivedAt: String(row.received_at) } : null;
+}
+
+function sampleSrnForReceipt(receiptId: string) {
+  return `DARJ-SRN-AOC4-${receiptId.split('-').at(-1) ?? '0000'}`;
 }
 
 async function getPayment(runId: string) {

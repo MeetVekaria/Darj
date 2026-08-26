@@ -49,6 +49,7 @@ async function completeJourney(page: Page) {
   await page.getByRole('button', { name: /Submit exact package/i }).click();
   await expect(page.getByRole('heading', { name: /exact package is in DARJ custody/i })).toBeVisible();
   await expect(page.getByText('DARJ-RASID-8129').first()).toBeVisible();
+  await expect(page.getByText('DARJ-SRN-AOC4-8129')).toBeVisible();
   await page.getByRole('button', { name: /Approve simulated payment/i }).click();
   await expect(page.getByText('PAID · RECONCILED', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: /Track processing/i }).click();
@@ -62,6 +63,33 @@ async function completeJourney(page: Page) {
 test('P0 primary journey reaches ACCEPTED with response and callback recovery', async ({ page }) => {
   await completeJourney(page);
   await expect(page.getByText('RECEIVED ≠ PAID ≠ PROCESSING ≠ ACCEPTED')).toBeVisible();
+  const receiptPdf = await page.evaluate(async () => {
+    const response = await fetch('/api/darj?export=receipt');
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    return { status: response.status, type: response.headers.get('content-type'), header: new TextDecoder().decode(bytes.slice(0, 5)), size: bytes.byteLength };
+  });
+  expect(receiptPdf.status).toBe(200);
+  expect(receiptPdf.type).toBe('application/pdf');
+  expect(receiptPdf.header).toBe('%PDF-');
+  expect(receiptPdf.size).toBeGreaterThan(2500);
+});
+
+test('internal display headings use the restrained public type scale', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop-chromium', 'Computed typography runs once.');
+  await login(page); await openPrepare(page); await fixAndCheck(page);
+  const jaanch = await page.getByRole('heading', { name: /43 checks/i }).evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { size: Number.parseFloat(style.fontSize), weight: style.fontWeight };
+  });
+  expect(jaanch.size).toBeLessThanOrEqual(36);
+  expect(jaanch.weight).toBe('500');
+  await page.goto('/filings/new');
+  const intake = await page.getByRole('heading', { name: 'What do you need to file?' }).evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { size: Number.parseFloat(style.fontSize), weight: style.fontWeight };
+  });
+  expect(intake.size).toBeLessThanOrEqual(36);
+  expect(intake.weight).toBe('500');
 });
 
 test('two same-credential reviewer sessions remain isolated', async ({ browser }, testInfo) => {
@@ -160,6 +188,12 @@ test('P0 upload verifies stored PDF and edit after signing creates v24', async (
   const boardRow = page.locator('.attachment-row').filter({ hasText: 'Board report' });
   await boardRow.locator('input[type=file]').setInputFiles({ name: 'DARJ-replacement-board-report.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4\n% DARJ demo replacement\n%%EOF') });
   await expect(page.getByText(/TUS complete.*MIME, bytes and SHA-256 verified/i)).toBeVisible();
+  const replacementState = await page.evaluate(() => fetch('/api/darj').then((response) => response.json())) as { attachments: Array<{ slot: string; version: number }>; attachmentVersions: Array<{ slot: string; version: number; current: boolean }> };
+  expect(replacementState.attachments.find((item) => item.slot === 'boardReport')?.version).toBe(2);
+  expect(replacementState.attachmentVersions.filter((item) => item.slot === 'boardReport')).toEqual(expect.arrayContaining([
+    expect.objectContaining({ version: 1, current: false }),
+    expect.objectContaining({ version: 2, current: true }),
+  ]));
   await fixAndCheck(page); await sealAndSign(page);
   await page.getByRole('button', { name: /Edit as new version/i }).click();
   await page.getByLabel('Revenue (₹)').fill('124800001');
@@ -231,6 +265,7 @@ test('security headers, cookie boundaries, and CSRF rejection protect mutations'
 });
 
 test('public and authenticated P0 routes have no serious Axe violations', async ({ page }, testInfo) => {
+  test.setTimeout(90_000);
   test.skip(testInfo.project.name !== 'desktop-chromium', 'Accessibility sweep runs once.');
   const publicRoutes = ['/login', '/services', '/reviewer', '/evidence', '/limitations'];
   for (const path of publicRoutes) {
@@ -257,7 +292,7 @@ test('public and authenticated P0 routes have no serious Axe violations', async 
 test('mobile journey has no horizontal overflow', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'mobile-360', 'This assertion is specific to the 360 px project.');
   await login(page); await openPrepare(page);
-  for (const path of ['/filings', '/services', '/company', '/documents', '/payments', '/filings/DARJ-DEMO-AOC4-01/prepare']) {
+  for (const path of ['/filings', '/filings/DARJ-DEMO-AOC4-01/studio', '/services', '/company', '/documents', '/payments', '/filings/DARJ-DEMO-AOC4-01/prepare']) {
     await page.goto(path);
     const overflow = await page.evaluate(() => ({
       pixels: document.documentElement.scrollWidth - document.documentElement.clientWidth,

@@ -52,7 +52,7 @@ test('first viewport exposes context, services, data and sample access', async (
     expect(access && access.y + access.height).toBeLessThanOrEqual(768);
     expect(data && data.y + data.height).toBeLessThanOrEqual(768);
   } else {
-    for (const label of ['File annual accounts', 'Register a company', 'Register an LLP', 'Update director details']) {
+    for (const label of ['Prepare an MCA filing from documents', 'Register a company', 'Register an LLP', 'Update director details']) {
       await expect(page.getByRole('button', { name: new RegExp(label, 'i') })).toBeVisible();
     }
     const access = await page.getByRole('button', { name: /Open sample company workspace/i }).boundingBox();
@@ -109,9 +109,69 @@ test('workspace masthead, side navigation and form anchors remain clear while sc
   await page.getByRole('button', { name: /Continue filing|View record/i }).first().click();
   await page.locator('.section-index a[href="#attachments"]').click();
   await expect(page.locator('#attachments')).toBeInViewport();
+  await expect(page.locator('.section-index a[href="#attachments"]')).toHaveAttribute('aria-current', 'location');
+  await expect(page.locator('.section-index a[href="#company"]')).not.toHaveClass(/active/);
   const targetTop = await page.locator('#attachments').evaluate((element) => Math.round(element.getBoundingClientRect().top));
   const headerBottom = await page.locator('.app-header').evaluate((element) => Math.round(element.getBoundingClientRect().bottom));
   expect(targetTop).toBeGreaterThanOrEqual(headerBottom + 8);
+});
+
+test('protected route restoration never flashes the public login screen', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop-chromium', 'Restoration timing runs once.');
+  await page.goto('/login');
+  await page.getByRole('button', { name: /Open sample company workspace/i }).click();
+  await expect(page).toHaveURL(/\/filings$/);
+  await page.route('**/api/darj', async (route) => {
+    if (route.request().method() === 'GET') {
+      await new Promise((resolve) => setTimeout(resolve, 900));
+    }
+    await route.continue();
+  });
+  const navigation = page.goto('/filings/DARJ-DEMO-AOC4-01/prepare');
+  await expect(page.getByText('Restoring secure workspace')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'File company forms, view records and track transactions' })).toHaveCount(0);
+  await navigation;
+  await expect(page.getByRole('heading', { name: 'Prepare AOC-4' })).toBeVisible();
+});
+
+test('Guided Filing Studio creates a source-linked reviewed draft', async ({ page }) => {
+  await page.goto('/login');
+  await page.getByRole('button', { name: /Open sample company workspace/i }).click();
+  await page.getByRole('button', { name: /Guided filing/i }).click();
+  await expect(page).toHaveURL(/\/studio$/);
+  await page.getByRole('button', { name: 'Open prepared package' }).click();
+  await expect(page.getByRole('heading', { name: 'No source evidence means no silent autofill' })).toBeVisible();
+  await expect(page.locator('.field-register > button')).toHaveCount(10);
+  await page.getByLabel('Review role').selectOption('CA/CS/CMA reviewer');
+  await page.getByRole('button', { name: 'Accept extraction' }).click();
+  await page.getByRole('button', { name: 'Complete professional review' }).click();
+  await expect(page.getByRole('button', { name: /Create reviewed draft/i })).toBeEnabled();
+  const preview = await page.evaluate(async () => {
+    const response = await fetch('/api/darj?export=preview');
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    return { status: response.status, header: new TextDecoder().decode(bytes.slice(0, 5)), type: response.headers.get('content-type') };
+  });
+  expect(preview).toEqual({ status: 200, header: '%PDF-', type: 'application/pdf' });
+  await page.getByRole('button', { name: /Create reviewed draft/i }).click();
+  await expect(page.getByRole('heading', { name: 'Prepare AOC-4' })).toBeVisible();
+  await expect(page.getByLabel('Board meetings')).toHaveValue('4');
+});
+
+test('Guided Filing Studio blocks and explicitly resolves conflicting evidence', async ({ page }) => {
+  await page.goto('/login');
+  await page.getByRole('button', { name: /Open sample company workspace/i }).click();
+  await page.getByRole('button', { name: /Guided filing/i }).click();
+  await page.getByRole('radio', { name: 'Conflicting AGM date' }).check();
+  await page.getByRole('button', { name: 'Open prepared package' }).click();
+  await expect(page.getByText(/different AGM dates/i).first()).toBeVisible();
+  await expect(page.getByText(/BLOCKING/).first()).toBeVisible();
+  await page.getByRole('button', { name: /Use Board’s Report/i }).click();
+  await page.getByLabel('Review role').selectOption('CA/CS/CMA reviewer');
+  await page.locator('.field-register > button').filter({ hasText: 'AGM date' }).click();
+  await page.getByRole('button', { name: 'Accept extraction' }).click();
+  await expect(page.getByRole('button', { name: 'Complete professional review' })).toBeEnabled();
+  await page.getByRole('button', { name: 'Complete professional review' }).click();
+  await expect(page.getByRole('button', { name: /Create reviewed draft/i })).toBeEnabled();
 });
 
 test('public headers stay consistent and dark surfaces remain readable', async ({ page }, testInfo) => {

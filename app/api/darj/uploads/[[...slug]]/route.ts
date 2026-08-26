@@ -127,7 +127,12 @@ class R2MultipartTusStore extends DataStore {
         throw ERRORS.FILE_WRITE_ERROR;
       }
       const verifiedAt = new Date().toISOString();
+      const currentVersion = await env.DB.prepare('SELECT COALESCE(MAX(version), 0) AS version FROM attachment_versions WHERE run_id = ? AND case_id = ? AND slot = ?').bind(row.run_id, CASE_ID, row.slot).first();
+      const version = Number(currentVersion?.version ?? 0) + 1;
       await env.DB.batch([
+        env.DB.prepare(`INSERT INTO attachment_versions (run_id, case_id, slot, version, filename, object_key, bytes, mime, sha256, verified_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 'application/pdf', ?, ?)`)
+          .bind(row.run_id, CASE_ID, row.slot, version, row.filename, row.object_key, storedBytes.byteLength, serverHash, verifiedAt),
         env.DB.prepare(`INSERT INTO attachments (run_id, case_id, slot, filename, object_key, bytes, mime, sha256, verified_at)
           VALUES (?, ?, ?, ?, ?, ?, 'application/pdf', ?, ?)
           ON CONFLICT(run_id, case_id, slot) DO UPDATE SET filename=excluded.filename, object_key=excluded.object_key, bytes=excluded.bytes, mime=excluded.mime, sha256=excluded.sha256, verified_at=excluded.verified_at`)

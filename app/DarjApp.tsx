@@ -4,8 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Upload } from 'tus-js-client';
 import { localDelete, localGet, localPut, localStorageAvailable } from '@/lib/local-db';
 import type { ServiceCategory, ServiceItem } from '@/lib/service-catalog';
+import { STUDIO_DOCUMENTS, type StudioRole, type StudioScenario, type StudioState } from '@/lib/guided-filing';
 
-type Screen = 'login' | 'reviewer' | 'filings' | 'newFiling' | 'services' | 'company' | 'documents' | 'payments' | 'guidance' | 'about' | 'prepare' | 'jaanch' | 'mohar' | 'sign' | 'rasid' | 'status' | 'recovery' | 'lineage' | 'evidence' | 'limitations' | 'demoControls';
+type Screen = 'login' | 'reviewer' | 'filings' | 'studio' | 'newFiling' | 'services' | 'company' | 'documents' | 'payments' | 'guidance' | 'about' | 'prepare' | 'jaanch' | 'mohar' | 'sign' | 'rasid' | 'status' | 'recovery' | 'lineage' | 'evidence' | 'limitations' | 'demoControls';
 type Theme = 'light' | 'dark';
 type FormShape = {
   registeredOffice: string;
@@ -17,10 +18,11 @@ type FormShape = {
   netProfit: string;
   directorName: string;
 };
-type Attachment = { slot: string; filename: string; bytes: number; mime: string; sha256: string; verifiedAt: string };
+type Attachment = { slot: string; version: number; filename: string; bytes: number; mime: string; sha256: string; verifiedAt: string };
+type AttachmentVersion = Attachment & { current: boolean };
 type PackageRecord = { packageId: string; version: number; hash: string; sealedAt: string; canonicalPayload: string };
 type SignatureRecord = { signatureId: string; packageId: string; provider: string; signedHash: string; signatureValue: string; signedAt: string };
-type ReceiptRecord = { receiptId: string; custodyId: string; packageId: string; packageHash: string; receivedAt: string; replayed?: boolean };
+type ReceiptRecord = { receiptId: string; srn: string; custodyId: string; packageId: string; packageHash: string; receivedAt: string; replayed?: boolean };
 type PaymentRecord = { paymentId: string; state: string; amountPaise: number; reconciliationReference: string; updatedAt: string };
 type EventRecord = { seq: number; eventType: string; actor: string; detail: string; occurredAt: string };
 type UploadSession = { uploadId: string; slot: string; filename: string; expectedBytes: number; confirmedOffset: number; clientSha256: string; fingerprint: string; state: string; updatedAt: string; expiresAt: string; uploadUrl: string };
@@ -38,13 +40,14 @@ type CheckRecord = {
 type AppState = {
   runId: string; caseId: string;
   draft: { version: number; form: FormShape; savedAt: string } | null;
-  attachments: Attachment[]; package: PackageRecord | null; signature: SignatureRecord | null;
+  attachments: Attachment[]; attachmentVersions: AttachmentVersion[]; package: PackageRecord | null; signature: SignatureRecord | null;
   packageCurrent: boolean; signatureValid: boolean;
   receipt: ReceiptRecord | null; payment: PaymentRecord | null;
   processingJob: { jobId: string; state: string; attemptCount: number } | null;
   processorPaused: boolean; events: EventRecord[];
   uploadPauseArmed: boolean; uploadSessions: UploadSession[]; master: MasterState | null;
   correction: CorrectionState | null; lineage: LineageRecord[]; features: FeatureFlags; serviceDrafts: ServiceDraft[];
+  studio: StudioState;
 };
 type DarjError = {
   code: string; stage: string; summary: string; detail: string; retryable: boolean; correlationId: string;
@@ -60,6 +63,7 @@ const EMPTY_CATALOGUE_SERVICES: CatalogService[] = [];
 
 const API = '/api/darj';
 const SESSION_HINT = 'darj-session-active';
+const PREPARE_SECTION_IDS = ['company', 'financials', 'governance', 'attachments'] as const;
 
 function hasSessionHint() {
   try { return window.localStorage.getItem(SESSION_HINT) === 'true'; }
@@ -91,6 +95,7 @@ export default function DarjApp() {
   const [hasLocalRecovery, setHasLocalRecovery] = useState(false);
   const [restoredLocalNeedsSync, setRestoredLocalNeedsSync] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+  const [restoringWorkspace, setRestoringWorkspace] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<Record<string, UploadProgress>>({});
   const [serviceQuery, setServiceQuery] = useState('');
   const [serviceCategory, setServiceCategory] = useState('all');
@@ -157,15 +162,21 @@ export default function DarjApp() {
 
   useEffect(() => {
     void (async () => {
+      const initialScreen = screenFromPath(window.location.pathname);
+      const publicScreen = initialScreen === 'reviewer' || initialScreen === 'evidence' || initialScreen === 'limitations' || initialScreen === 'services' || initialScreen === 'login';
+      if (!publicScreen || (initialScreen === 'login' && hasSessionHint())) setRestoringWorkspace(true);
       const ready = await localStorageAvailable();
       setStorageReady(ready);
       const local = ready ? await safeReadLocalDraft('DARJ-DEMO-AOC4-01') : null;
       setHasLocalRecovery(Boolean(local));
-      const initialScreen = screenFromPath(window.location.pathname);
       if (initialScreen === 'reviewer' || initialScreen === 'evidence' || initialScreen === 'limitations' || initialScreen === 'services') return;
       if (initialScreen === 'login' && !hasSessionHint()) return;
-      const restored = await refresh();
-      if (restored) setScreen(screenFromPath(window.location.pathname) === 'login' ? 'filings' : screenFromPath(window.location.pathname));
+      try {
+        const restored = await refresh();
+        if (restored) setScreen(screenFromPath(window.location.pathname) === 'login' ? 'filings' : screenFromPath(window.location.pathname));
+      } finally {
+        setRestoringWorkspace(false);
+      }
     })();
   }, [refresh]);
 
@@ -208,7 +219,9 @@ export default function DarjApp() {
     setNotice('');
     setScreen(next);
     window.history.pushState({}, '', pathForScreen(next, state?.caseId));
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    // Finish route positioning immediately so a subsequent in-page anchor is not
+    // pulled back to the top by an earlier smooth-scroll animation.
+    window.scrollTo({ top: 0, behavior: 'auto' });
   };
 
   async function post(action: string, data: Record<string, unknown> = {}) {
@@ -238,7 +251,7 @@ export default function DarjApp() {
     return payload;
   }
 
-  async function login() {
+  async function login(destination: Screen = 'filings') {
     setBusy('login');
     try {
       const recovery = await safeReadLocalDraft('DARJ-DEMO-AOC4-01');
@@ -278,7 +291,7 @@ export default function DarjApp() {
         window.history.replaceState({}, '', reviewerPath(reviewer, next.caseId));
         window.scrollTo({ top: 0 });
       } else {
-        navigate(recovery && sessionExpired ? 'prepare' : 'filings');
+        navigate(recovery && sessionExpired ? 'prepare' : destination);
       }
     } finally { setBusy(''); }
   }
@@ -290,6 +303,37 @@ export default function DarjApp() {
       await refresh();
       navigate('filings');
       setNotice(result.filing?.formCode === 'AOC-4' ? 'AOC-4 filing created. Continue in the filing room when you are ready.' : `${result.filing?.formCode ?? formCode} intake saved. Your details are durable and ready for the next guided step.`);
+    } finally { setBusy(''); }
+  }
+
+  async function openStudio(scenario: StudioScenario = 'clean', serviceNeed = '') {
+    setBusy('studio-open');
+    try {
+      const result = await post('openStudio', { scenario, serviceNeed }) as { studio: StudioState };
+      setState((current) => current ? { ...current, studio: result.studio } : current);
+      navigate('studio');
+      setNotice(scenario === 'conflict' ? 'Conflict package opened. The AGM date must be resolved before sealing.' : 'Prepared AOC-4 package opened with source-linked evidence.');
+    } finally { setBusy(''); }
+  }
+
+  async function updateStudio(operation: string, data: Record<string, unknown> = {}) {
+    setBusy(`studio-${operation}`);
+    try {
+      const result = await post('updateStudio', { operation, ...data }) as { studio: StudioState };
+      setState((current) => current ? { ...current, studio: result.studio } : current);
+    } finally { setBusy(''); }
+  }
+
+  async function applyStudioDraft() {
+    if (!state?.studio || !state.draft || !form) return;
+    const extracted = Object.fromEntries(state.studio.evidence.filter((field) => field.formField && field.value).map((field) => [field.formField, field.value]));
+    const next = { ...form, ...extracted } as FormShape;
+    setBusy('studio-apply');
+    try {
+      await saveDraft(next, state.draft.version);
+      setForm(next);
+      navigate('prepare');
+      setNotice('Reviewed evidence applied to a new durable draft version. Run Jaanch before sealing.');
     } finally { setBusy(''); }
   }
 
@@ -686,10 +730,11 @@ export default function DarjApp() {
   const passed = checks.filter((check) => !check.blocking);
   const accepted = state?.processingJob?.state === 'ACCEPTED';
 
+  if (!hydrated || (restoringWorkspace && !state)) return <WorkspaceRestoringScreen theme={theme} />;
   if (screen === 'reviewer') return <ReviewerScreen theme={theme} onTheme={toggleTheme} onNavigate={navigate} />;
   if (screen === 'evidence' || screen === 'limitations') return <PublicInformationScreen screen={screen} theme={theme} onTheme={toggleTheme} onNavigate={navigate} />;
   if (screen === 'services' && (!state || !form)) return <PublicServicesScreen theme={theme} onTheme={toggleTheme} query={serviceQuery} category={serviceCategory} selectedKey={selectedServiceKey} onQuery={setServiceQuery} onCategory={setServiceCategory} onSelect={setSelectedServiceKey} onHome={() => navigate('login')} onReviewer={() => navigate('reviewer')} onLimitations={() => navigate('limitations')} onEnter={() => void login()} />;
-  if (screen === 'login' || !state || !form) return <LoginScreen theme={theme} onTheme={toggleTheme} hydrated={hydrated} busy={busy === 'login'} onEnter={() => void login()} onBrowse={(query = '') => { setServiceQuery(query); navigate('services'); }} onReviewer={() => navigate('reviewer')} onEvidence={() => navigate('evidence')} onLimitations={() => navigate('limitations')} error={error} sessionExpired={sessionExpired} hasLocalRecovery={hasLocalRecovery} storageReady={storageReady} />;
+  if (screen === 'login' || !state || !form) return <LoginScreen theme={theme} onTheme={toggleTheme} hydrated={hydrated} busy={busy === 'login'} onEnter={() => void login()} onStudio={() => void login('studio')} onBrowse={(query = '') => { setServiceQuery(query); navigate('services'); }} onReviewer={() => navigate('reviewer')} onEvidence={() => navigate('evidence')} onLimitations={() => navigate('limitations')} error={error} sessionExpired={sessionExpired} hasLocalRecovery={hasLocalRecovery} storageReady={storageReady} />;
 
   return (
     <div className="app-shell">
@@ -701,9 +746,10 @@ export default function DarjApp() {
           {notice && <div className="notice" role="status" aria-live="polite"><span className="status-mark progress" />{notice}</div>}
           {error && <ErrorPanel error={error} />}
 
-          {screen === 'filings' && <FilingsScreen state={state} onPrepare={() => navigate(resumeScreen(state))} onRecovery={() => navigate('recovery')} onNavigate={navigate} />}
+          {screen === 'filings' && <FilingsScreen state={state} onPrepare={() => navigate(resumeScreen(state))} onStudio={() => navigate('studio')} onRecovery={() => navigate('recovery')} onNavigate={navigate} />}
+          {screen === 'studio' && <GuidedFilingStudio state={state} busy={busy} onOpen={(scenario, need) => void openStudio(scenario, need)} onUpdate={(operation, data) => void updateStudio(operation, data)} onApply={() => void applyStudioDraft()} onPrepare={() => navigate('prepare')} />}
           {screen === 'newFiling' && <NewFilingScreen busy={busy === 'start-service'} onStart={(formCode, financialYear, applicantName, note) => void startService(formCode, financialYear, applicantName, note)} />}
-          {screen === 'services' && <ServiceDirectoryScreen query={serviceQuery} category={serviceCategory} selectedKey={selectedServiceKey} onQuery={setServiceQuery} onCategory={setServiceCategory} onSelect={setSelectedServiceKey} onOpenWorking={() => navigate(resumeScreen(state))} onStart={() => navigate('newFiling')} />}
+          {screen === 'services' && <ServiceDirectoryScreen query={serviceQuery} category={serviceCategory} selectedKey={selectedServiceKey} onQuery={setServiceQuery} onCategory={setServiceCategory} onSelect={setSelectedServiceKey} onOpenWorking={() => navigate('studio')} onStart={() => navigate('newFiling')} />}
           {screen === 'company' && <CompanyScreen state={state} onPrepare={() => navigate(resumeScreen(state))} onDocuments={() => navigate('documents')} />}
           {screen === 'documents' && <DocumentsScreen state={state} onPrepare={() => navigate('prepare')} />}
           {screen === 'payments' && <PaymentsScreen state={state} onReceipt={() => navigate(state.receipt ? 'rasid' : resumeScreen(state))} />}
@@ -725,7 +771,7 @@ export default function DarjApp() {
           {screen === 'rasid' && <RasidScreen state={state} busy={busy} online={online} onPay={() => void approvePayment()} onStatus={() => navigate('status')} />}
           {screen === 'status' && <StatusScreen state={state} accepted={accepted} busy={busy} online={online} onPause={() => void pauseProcessor()} onResume={() => void resumeProcessor()} />}
           {screen === 'recovery' && <RecoveryScreen state={state} onOpenMain={() => navigate('prepare')} />}
-          {screen === 'lineage' && (state.features.correctionLineage ? <LineageScreen state={state} busy={busy} onCreate={() => void createCorrection()} onSign={() => { if (state.package?.packageId === state.correction?.childPackageId) navigate('mohar'); }} /> : <FilingsScreen state={state} onPrepare={() => navigate(resumeScreen(state))} onRecovery={() => navigate('recovery')} onNavigate={navigate} />)}
+          {screen === 'lineage' && (state.features.correctionLineage ? <LineageScreen state={state} busy={busy} onCreate={() => void createCorrection()} onSign={() => { if (state.package?.packageId === state.correction?.childPackageId) navigate('mohar'); }} /> : <FilingsScreen state={state} onPrepare={() => navigate(resumeScreen(state))} onStudio={() => navigate('studio')} onRecovery={() => navigate('recovery')} onNavigate={navigate} />)}
           {screen === 'demoControls' && <DemoControlsScreen state={state} busy={busy} onControl={(flag) => void runControl(flag)} onPause={() => void pauseProcessor()} onResume={() => void resumeProcessor()} onReset={() => void resetDemo()} onLineage={() => navigate('lineage')} />}
         </main>
       </div>
@@ -736,6 +782,10 @@ export default function DarjApp() {
       </footer>
     </div>
   );
+}
+
+function WorkspaceRestoringScreen({ theme }: { theme: Theme }) {
+  return <main className="workspace-restoring" data-theme={theme} aria-busy="true" aria-live="polite"><div className="india-rule" aria-hidden="true"><span /><span /><span /></div><div className="restoring-mast"><RegistryBrand /><span className="status"><i className="status-mark progress" />Restoring secure workspace</span></div><div className="restoring-body"><span className="restoring-line" /><span className="restoring-line short" /><p>Opening the saved filing record…</p></div></main>;
 }
 
 function Disclosure({ onOpen }: { onOpen: () => void }) {
@@ -752,7 +802,7 @@ function RegistryBrand({ compact = false }: { compact?: boolean }) {
 }
 
 const HOME_ACTIONS = [
-  ['File annual accounts', 'AOC-4', 'working'],
+  ['Prepare an MCA filing from documents', 'AOC-4', 'working'],
   ['Register a company', 'company incorporation', 'catalogue'],
   ['Register an LLP', 'LLP incorporation', 'catalogue'],
   ['Update director details', 'DIR-3 KYC', 'catalogue'],
@@ -775,7 +825,7 @@ const HOME_SERVICE_GROUPS = [
 
 const SEARCH_SUGGESTIONS = ['AOC-4', 'MGT-7', 'DIR-3 KYC', 'Company master data', 'Track transaction'] as const;
 
-function LoginScreen({ theme, onTheme, hydrated, busy, onEnter, onBrowse, onReviewer, onEvidence, onLimitations, error, sessionExpired, hasLocalRecovery, storageReady }: { theme: Theme; onTheme: () => void; hydrated: boolean; busy: boolean; onEnter: () => void; onBrowse: (query?: string) => void; onReviewer: () => void; onEvidence: () => void; onLimitations: () => void; error: DarjError | null; sessionExpired: boolean; hasLocalRecovery: boolean; storageReady: boolean }) {
+function LoginScreen({ theme, onTheme, hydrated, busy, onEnter, onStudio, onBrowse, onReviewer, onEvidence, onLimitations, error, sessionExpired, hasLocalRecovery, storageReady }: { theme: Theme; onTheme: () => void; hydrated: boolean; busy: boolean; onEnter: () => void; onStudio: () => void; onBrowse: (query?: string) => void; onReviewer: () => void; onEvidence: () => void; onLimitations: () => void; error: DarjError | null; sessionExpired: boolean; hasLocalRecovery: boolean; storageReady: boolean }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [registryQuery, setRegistryQuery] = useState('');
   const [registrySearched, setRegistrySearched] = useState(false);
@@ -809,7 +859,7 @@ function LoginScreen({ theme, onTheme, hydrated, busy, onEnter, onBrowse, onRevi
             <button type="submit">Search</button>
           </form>
           <div className="search-suggestions" aria-label="Suggested searches"><span>Try</span>{SEARCH_SUGGESTIONS.map((suggestion) => <button key={suggestion} onClick={() => onBrowse(suggestion)}>{suggestion}</button>)}</div>
-          <div className="quick-actions" aria-label="Popular services">{HOME_ACTIONS.map(([label, query, availability], index) => <button key={label} className={index === 0 ? 'working' : ''} onClick={availability === 'working' ? onEnter : () => onBrowse(query)}><span className="mono">{String(index + 1).padStart(2, '0')}</span><strong>{label}</strong><span aria-hidden="true">→</span></button>)}</div>
+          <div className="quick-actions" aria-label="Popular services">{HOME_ACTIONS.map(([label, query, availability], index) => <button key={label} className={index === 0 ? 'working' : ''} onClick={availability === 'working' ? onStudio : () => onBrowse(query)}><span className="mono">{String(index + 1).padStart(2, '0')}</span><strong>{label}</strong><span aria-hidden="true">→</span></button>)}</div>
         </div>
         <aside className="review-access" aria-labelledby="review-access-title">
           <div className="review-access-head"><span className="status-mark durable" /><span>Synthetic environment</span></div>
@@ -862,12 +912,13 @@ function AppHeader({ screen, state, theme, onTheme, serviceQuery, onServiceQuery
 function PlatformNav({ screen, onNavigate }: { screen: Screen; onNavigate: (screen: Screen) => void }) {
   const items: Array<{ screen: Screen; label: string; index: string }> = [
     { screen: 'filings', label: 'Overview', index: '01' },
-    { screen: 'newFiling', label: 'New filing', index: '02' },
-    { screen: 'company', label: 'Company', index: '03' },
-    { screen: 'documents', label: 'Documents', index: '04' },
-    { screen: 'payments', label: 'Payments', index: '05' },
-    { screen: 'guidance', label: 'Guidance', index: '06' },
-    { screen: 'about', label: 'About DARJ', index: '07' },
+    { screen: 'studio', label: 'Guided filing', index: '02' },
+    { screen: 'newFiling', label: 'New filing', index: '03' },
+    { screen: 'company', label: 'Company', index: '04' },
+    { screen: 'documents', label: 'Documents', index: '05' },
+    { screen: 'payments', label: 'Payments', index: '06' },
+    { screen: 'guidance', label: 'Guidance', index: '07' },
+    { screen: 'about', label: 'About DARJ', index: '08' },
   ];
   const filingScreens: Screen[] = ['prepare', 'jaanch', 'mohar', 'sign', 'rasid', 'status', 'recovery', 'lineage', 'demoControls'];
   return <aside className="platform-nav" aria-label="DARJ workspace"><p className="platform-nav-label">Workspace</p><nav>{items.map((item) => <button key={item.screen} className={screen === item.screen || (item.screen === 'filings' && filingScreens.includes(screen)) ? 'active' : ''} onClick={() => onNavigate(item.screen)}><span>{item.index}</span>{item.label}</button>)}</nav><div className="platform-nav-foot"><strong>Independent workspace</strong><span>Sample records.</span></div></aside>;
@@ -877,11 +928,11 @@ function Wordmark({ compact = false }: { compact?: boolean }) {
   return <div className={`wordmark ${compact ? 'compact' : ''}`} aria-label="DARJ, दर्ज"><span>DARJ</span><span className="wordmark-divider" aria-hidden="true" /><span lang="hi">दर्ज</span></div>;
 }
 
-function FilingsScreen({ state, onPrepare, onRecovery, onNavigate }: { state: AppState; onPrepare: () => void; onRecovery: () => void; onNavigate: (screen: Screen) => void }) {
+function FilingsScreen({ state, onPrepare, onStudio, onRecovery, onNavigate }: { state: AppState; onPrepare: () => void; onStudio: () => void; onRecovery: () => void; onNavigate: (screen: Screen) => void }) {
   const count = 1 + state.serviceDrafts.length;
   return (
     <section className="page-section dashboard-page" aria-labelledby="filings-title">
-      <div className="dashboard-intro"><div><p className="eyebrow">MCA21 filing workspace</p><h1 id="filings-title">Good afternoon, Meet.</h1><p>Your company workspace keeps each filing, its evidence and its outcome in one traceable record.</p></div><button className="primary dashboard-start" onClick={() => onNavigate('newFiling')}>Start a new filing <span aria-hidden="true">→</span></button></div>
+      <div className="dashboard-intro"><div><p className="eyebrow">MCA21 filing workspace</p><h1 id="filings-title">Good afternoon, Meet.</h1><p>Your company workspace keeps each filing, its evidence and its outcome in one traceable record.</p></div><div className="dashboard-actions"><button className="primary dashboard-start" onClick={onStudio}>Prepare from documents <span aria-hidden="true">→</span></button><button className="secondary" onClick={() => onNavigate('newFiling')}>Start a new filing</button></div></div>
       <div className="dashboard-grid">
         <article className="priority-card"><div className="priority-head"><div><p className="eyebrow">Priority / AOC-4</p><h2>Annual financial filing</h2></div><span className="due-chip">Due scenario</span></div><div className="priority-progress" aria-label="Filing progress"><span className="done">Draft</span><span className={state.package ? 'done' : 'current'}>Jaanch</span><span className={state.receipt ? 'done' : ''}>Mohar</span><span className={state.receipt ? 'done' : ''}>Rasid</span></div><dl><div><dt>Entity</dt><dd>Aster Components Private Limited</dd></div><div><dt>Financial year</dt><dd>2025–26</dd></div><div><dt>Current record</dt><dd>{journeyLabel(state)}</dd></div><div><dt>Evidence</dt><dd>{state.attachments.length} verified PDFs</dd></div></dl><button className="primary" onClick={onPrepare}>{state.receipt ? 'Open durable record' : 'Continue the filing room'} <span aria-hidden="true">→</span></button></article>
         <aside className="filing-passport"><div className="passport-head"><span>FILING PASSPORT</span><strong>ACPL / 2025–26</strong></div><div className="passport-mark">A</div><dl><div><dt>Master snapshot</dt><dd>{state.master?.pinnedVersion ?? 7}</dd></div><div><dt>Draft version</dt><dd>v{state.draft?.version ?? 17}</dd></div><div><dt>Verified files</dt><dd>{state.attachments.length} / 3</dd></div><div><dt>Custody state</dt><dd>{state.receipt ? 'RECEIVED' : 'NOT SUBMITTED'}</dd></div></dl><small>One portable view of data provenance, attachments, checks and custody.</small></aside>
@@ -992,6 +1043,69 @@ function AboutScreen({ onNavigate }: { onNavigate: (screen: Screen) => void }) {
   return <section className="page-section about-page" aria-labelledby="about-title"><div className="about-mast"><div><p className="eyebrow">About DARJ / दर्ज</p><h1 id="about-title">A reliable filing layer, designed independently.</h1></div><p>DARJ asks one product question: what if a statutory filing behaved like a reliable transaction instead of a fragile browser session?</p></div><div className="about-principles"><article><span>01</span><h2>Save before sync</h2><p>Draft recovery begins locally, then reconciles explicit versions with the server.</p></article><article><span>02</span><h2>Seal an exact package</h2><p>Fields and verified files become one immutable, canonical package hash.</p></article><article><span>03</span><h2>Make retries harmless</h2><p>Idempotency and atomic custody prevent duplicate receipts after lost responses.</p></article><article><span>04</span><h2>Name every state</h2><p>Received, paid, processing and accepted never blur into one vague “submitted” label.</p></article></div><div className="about-split"><section><p className="eyebrow">What this platform covers</p><h2>A complete service map around one complete journey.</h2><p>The platform shell maps company, LLP, director, charge, annual, approval, foreign-company, Nidhi, master-data, document, payment, grievance, investor, DSC, information and help categories. That breadth improves discovery; it does not create fake functionality.</p><button className="primary" onClick={() => onNavigate('services')}>Explore the service map <span aria-hidden="true">→</span></button></section><section className="independence-card"><span className="mono">INDEPENDENCE RECORD / 01</span><h2>Not an MCA service.</h2><ul><li>No live MCA integration or private API access</li><li>No government logo, endorsement or partnership claim</li><li>No real company, DIN, PAN, Aadhaar, OTP or payment data</li><li>No legal-compliance determination</li><li>Working and mocked boundaries shown in product</li></ul><button className="secondary" onClick={() => onNavigate('limitations')}>Read all limitations</button></section></div><div className="mca-context"><div><p className="eyebrow">MCA context</p><h2>Designed for the public-service landscape, not presented as the Ministry.</h2></div><p>The official MCA surface spans policy information, Acts and rules, offices and affiliated bodies, registry master data, company and LLP filings, directors and DSC, payments, documents, grievances, IEPF, data and help. DARJ reorganises those categories for discovery while preserving its independent identity.</p></div></section>;
 }
 
+function GuidedFilingStudio({ state, busy, onOpen, onUpdate, onApply, onPrepare }: {
+  state: AppState;
+  busy: string;
+  onOpen: (scenario: StudioScenario, serviceNeed?: string) => void;
+  onUpdate: (operation: string, data?: Record<string, unknown>) => void;
+  onApply: () => void;
+  onPrepare: () => void;
+}) {
+  const studio = state.studio;
+  const [scenario, setScenario] = useState<StudioScenario>('clean');
+  const [serviceNeed, setServiceNeed] = useState('File annual financial statements for my company');
+  const [filter, setFilter] = useState<'all' | 'unresolved' | 'low' | 'edited'>('all');
+  const [selectedField, setSelectedField] = useState('financialYear');
+  const [editValue, setEditValue] = useState('');
+  const [comment, setComment] = useState('');
+  const [evidenceMode, setEvidenceMode] = useState(true);
+  const evidence = studio.evidence;
+  const visibleEvidence = evidence.filter((field) => filter === 'all' || (filter === 'unresolved' && (!field.value || field.confidence === 'CONFLICTING')) || (filter === 'low' && ['LOW', 'MEDIUM', 'CONFLICTING'].includes(field.confidence)) || (filter === 'edited' && field.edited));
+  const selected = evidence.find((field) => field.id === selectedField) ?? visibleEvidence[0] ?? evidence[0];
+  const blocking = studio.validations.filter((check) => check.state === 'BLOCKING').length;
+  const review = studio.validations.filter((check) => check.state === 'REVIEW').length;
+  const studioBusy = busy.startsWith('studio');
+  const timeline = [
+    ...studio.timeline,
+    ...state.events.filter((event) => ['SEALED', 'SIGNED', 'RECEIVED', 'PAID', 'ACCEPTED'].includes(event.eventType)).map((event) => ({ id: `case-${event.seq}`, label: event.eventType.replaceAll('_', ' '), detail: event.detail, actor: event.actor, occurredAt: event.occurredAt, packageVersion: state.package ? `Package v${state.package.version}` : `Draft v${state.draft?.version ?? 17}` })),
+  ];
+  const hasExtraction = evidence.length > 0;
+
+  return <section className={`page-section studio-page ${evidenceMode ? 'evidence-mode' : ''}`} aria-labelledby="studio-title">
+    <div className="studio-heading"><div><p className="eyebrow">DARJ Guided Filing Studio</p><h1 id="studio-title">Documents to a reviewed AOC-4 package</h1><p>Upload once, verify every extracted value, record professional decisions, then continue through DARJ’s retry-safe filing journey.</p></div><div className="studio-boundary"><span className="status-mark attention" /><div><strong>Filing assistance, not legal advice</strong><p>Actual MCA submission, DSC signing and professional certification remain outside this independent prototype.</p></div></div></div>
+
+    <ol className="studio-steps" aria-label="Guided filing stages">
+      {['Entry', 'Guide', 'Documents', 'Extraction', 'Professional review', 'Seal and submit'].map((label, index) => <li key={label} className={(hasExtraction && index < 4) || studio.stage === 'READY' || (studio.stage === 'REVIEW' && index === 4) ? 'done' : index === 0 ? 'current' : ''}><span>{String(index + 1).padStart(2, '0')}</span>{label}</li>)}
+    </ol>
+
+    <section className="studio-entry" aria-labelledby="studio-entry-title"><div className="studio-section-head"><div><p className="eyebrow">Filing entry</p><h2 id="studio-entry-title">Start with the task or the documents you already have</h2></div>{hasExtraction && <Status label={`${studio.scenario.toUpperCase()} PACKAGE · ${studio.stage}`} tone={blocking ? 'attention' : studio.stage === 'READY' ? 'durable' : 'progress'} />}</div>
+      <div className="entry-options">
+        <article className="selected"><span className="mono">AOC-4</span><h3>File financial statements</h3><p>The complete automated journey in this build.</p><button className="primary" disabled={studioBusy} onClick={() => onOpen(scenario)}>Prepare AOC-4 <span aria-hidden="true">→</span></button></article>
+        <article><span className="mono">SERVICE FINDER</span><h3>Describe what you need</h3><label htmlFor="service-need">Plain-language filing need</label><textarea id="service-need" value={serviceNeed} onChange={(event) => setServiceNeed(event.target.value)} /><button className="secondary" disabled={studioBusy || serviceNeed.trim().length < 8} onClick={() => onOpen('clean', serviceNeed)}>Find the filing</button></article>
+        <article><span className="mono">RESUME</span><h3>Continue a saved package</h3><p>{hasExtraction ? `Last saved ${formatTime(studio.updatedAt)} at ${studio.stage.toLowerCase().replaceAll('_', ' ')}.` : 'No document package has been prepared in this review run yet.'}</p><button className="secondary" disabled={!hasExtraction} onClick={() => document.getElementById('studio-evidence')?.scrollIntoView({ behavior: 'smooth' })}>Resume package</button></article>
+      </div>
+      <div className="scenario-switch" aria-label="Prepared review scenarios"><div><strong>Demo accelerator</strong><p>Open a prepared package without waiting for uploads or extraction.</p></div><label><input type="radio" name="studio-scenario" checked={scenario === 'clean'} onChange={() => setScenario('clean')} /> Clean documents</label><label><input type="radio" name="studio-scenario" checked={scenario === 'conflict'} onChange={() => setScenario('conflict')} /> Conflicting AGM date</label><button className="secondary" disabled={studioBusy} onClick={() => onOpen(scenario)}>Open prepared package</button></div>
+    </section>
+
+    {hasExtraction && <>
+      <section className="studio-guide" aria-labelledby="studio-guide-title"><div><p className="eyebrow">Filing Guide</p><h2 id="studio-guide-title">Questions only where the documents leave doubt</h2><p>The guide determined <strong>{studio.variant}</strong>. Answers are saved to this filing run and can be changed.</p></div>{studio.evidence.find((field) => field.id === 'agmDate')?.confidence === 'CONFLICTING' ? <div className="guide-question"><strong>I found different AGM dates in the Board’s Report and authorization record. Which record should be used?</strong><p>The selected date will still require professional confirmation before sealing.</p><div><button className="secondary" onClick={() => onUpdate('answer', { key: 'agmResolution', value: 'board' })}>Use Board’s Report · 29 Jul</button><button className="secondary" onClick={() => onUpdate('answer', { key: 'agmResolution', value: 'authorization' })}>Use authorization record · 31 Jul</button></div></div> : <div className="guide-clear"><span className="status-mark durable" /><div><strong>No unanswered filing questions</strong><p>The supplied records contain the fields required by this limited AOC-4 schema.</p></div></div>}</section>
+
+      <section className="studio-documents" aria-labelledby="studio-documents-title"><div className="studio-section-head"><div><p className="eyebrow">Resumable document intake</p><h2 id="studio-documents-title">Files remain traceable when they are replaced</h2></div><button className="secondary" onClick={onPrepare}>Manage uploads</button></div><div className="document-register">{STUDIO_DOCUMENTS.map((document, index) => { const attachment = state.attachments.find((item) => item.slot === document.slot); const upload = state.uploadSessions.find((item) => item.slot === document.slot && item.state === 'UPLOADING'); const retainedVersions = state.attachmentVersions.filter((item) => item.slot === document.slot).length; return <article key={document.slot}><span className="mono">{String(index + 1).padStart(2, '0')}</span><div><strong>{document.label}</strong><small>{document.classification} · {document.required ? 'Required for this case' : 'When applicable'}</small></div><div><Status label={attachment ? 'EXTRACTED' : document.required ? 'MISSING' : 'NOT REQUIRED'} tone={attachment ? 'durable' : document.required ? 'attention' : 'progress'} /><small>{attachment ? `${attachment.filename} · ${formatBytes(attachment.bytes)}` : 'Checklist adapts to the filing variant'}</small></div><div><code>{attachment ? shortHash(attachment.sha256) : 'No fingerprint'}</code><small>{attachment ? `Virus scan passed · version ${attachment.version} · ${retainedVersions} retained` : upload ? `Recovery offset ${formatBytes(upload.confirmedOffset)}` : 'No file stored'}</small></div></article>; })}</div><p className="attachment-help">The three supplied PDFs are byte-counted, MIME checked and SHA-256 verified. Replacements use the existing TUS and R2 recovery path and retain every prior fingerprint. This checklist is contextual, not a universal statement of AOC-4 requirements.</p></section>
+
+      <section id="studio-evidence" className="studio-evidence" aria-labelledby="studio-evidence-title"><div className="studio-section-head"><div><p className="eyebrow">Evidence-backed extraction</p><h2 id="studio-evidence-title">No source evidence means no silent autofill</h2></div><button className={`secondary evidence-toggle ${evidenceMode ? 'active' : ''}`} aria-pressed={evidenceMode} onClick={() => setEvidenceMode((current) => !current)}>Evidence Mode {evidenceMode ? 'on' : 'off'}</button></div>
+        <div className="evidence-toolbar"><label>Review role<select value={studio.activeRole} onChange={(event) => onUpdate('setRole', { role: event.target.value as StudioRole })}><option>Company preparer</option><option>CA/CS/CMA reviewer</option><option>Authorized signatory</option></select></label><div role="group" aria-label="Evidence filters">{(['all', 'unresolved', 'low', 'edited'] as const).map((item) => <button key={item} className={filter === item ? 'active' : ''} onClick={() => setFilter(item)}>{item === 'low' ? 'Low confidence' : item[0].toUpperCase() + item.slice(1)}</button>)}</div><span><strong>{blocking}</strong> blocking · <strong>{review}</strong> review</span></div>
+        <div className="evidence-workspace"><div className="field-register">{visibleEvidence.map((field) => <button key={field.id} className={selected?.id === field.id ? 'selected' : ''} onClick={() => { setSelectedField(field.id); setEditValue(field.value); setComment(field.reviewerComment); }}><span><strong>{field.label}</strong><small>{field.value || 'Unresolved'}</small></span><Status label={field.confidence} tone={field.confidence === 'CONFLICTING' || field.confidence === 'LOW' ? 'attention' : field.confidence === 'MEDIUM' ? 'progress' : 'durable'} /></button>)}</div>{selected && <article className="source-evidence"><div className="source-head"><div><p className="eyebrow">Supporting evidence</p><h3>{selected.sourceDocument}</h3></div><Status label={selected.ruleStatus} tone={selected.ruleStatus === 'BLOCKED' ? 'attention' : selected.ruleStatus === 'REVIEW' ? 'progress' : 'durable'} /></div><dl><div><dt>Page</dt><dd>{selected.page ?? 'Not found'}</dd></div><div><dt>Section</dt><dd>{selected.section}</dd></div><div><dt>Extracted</dt><dd>{formatTime(selected.extractedAt)}</dd></div><div><dt>Previous</dt><dd>{selected.previousValue || 'No prior value'}</dd></div></dl><blockquote>{selected.evidence}</blockquote><label>Edit value<input value={editValue} onChange={(event) => setEditValue(event.target.value)} placeholder={selected.value || 'Enter a resolved value'} /></label><label>Reviewer comment<textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Explain the decision or clarification needed" /></label><div className="review-actions"><button className="primary" disabled={!selected.value || studioBusy} onClick={() => onUpdate('review', { fieldId: selected.id, decision: 'accept', comment })}>Accept extraction</button><button className="secondary" disabled={!editValue.trim() || studioBusy} onClick={() => onUpdate('review', { fieldId: selected.id, decision: 'edit', value: editValue, comment })}>Save edited value</button><button className="secondary" disabled={studioBusy} onClick={() => onUpdate('review', { fieldId: selected.id, decision: 'clarify', comment: comment || 'Clarification requested from the company preparer.' })}>Request clarification</button></div></article>}</div>
+      </section>
+
+      <section className="studio-validation" aria-labelledby="studio-validation-title"><div className="studio-section-head"><div><p className="eyebrow">Deterministic validation</p><h2 id="studio-validation-title">Rules decide readiness, not the extraction model</h2></div><Status label={blocking ? `${blocking} BLOCKING` : review ? `${review} REVIEW` : 'READY TO SEAL'} tone={blocking ? 'attention' : review ? 'progress' : 'durable'} /></div><div className="validation-register">{studio.validations.map((check) => <article key={check.id}><Status label={check.state} tone={check.state === 'BLOCKING' ? 'attention' : check.state === 'REVIEW' ? 'progress' : 'durable'} /><div><strong>{check.label}</strong><p>{check.detail}</p><code>{check.ruleVersion}</code></div></article>)}</div><div className="action-bar"><div><strong>{studio.stage === 'READY' ? 'Professional review is recorded' : 'Complete review before creating the draft'}</strong><small>The responsible professional remains accountable for certification and approval.</small></div>{studio.stage === 'READY' ? <button className="primary" disabled={busy === 'studio-apply'} onClick={onApply}>Create reviewed draft <span aria-hidden="true">→</span></button> : <button className="primary" disabled={blocking > 0 || studioBusy} onClick={() => onUpdate('completeReview')}>Complete professional review</button>}</div></section>
+
+      <section className="studio-package" aria-labelledby="studio-package-title"><div className="studio-section-head"><div><p className="eyebrow">Downloadable filing package</p><h2 id="studio-package-title">Inspect every part before sealing</h2></div><span className="mono">{state.package?.hash ? shortHash(state.package.hash) : 'Preview checksum generated on download'}</span></div><div className="download-grid"><a href={`${API}?export=preview`}>Draft form PDF<small>Clearly labelled preview</small></a><a href={`${API}?export=evidence`}>Evidence report PDF<small>Field, source and excerpt</small></a><a href={`${API}?export=manifest`}>Attachment manifest<small>Hashes and MIME</small></a><a href={`${API}?export=validation`}>Validation report<small>Versioned rule results</small></a><a href={`${API}?export=review`}>Review history<small>Roles and decisions</small></a><a href={`${API}?export=package`}>Package JSON<small>Machine-readable record</small></a></div></section>
+
+      <section className="studio-timeline" aria-labelledby="studio-timeline-title"><div className="studio-section-head"><div><p className="eyebrow">Filing evidence timeline</p><h2 id="studio-timeline-title">One record from documents to outcome</h2></div></div><ol>{timeline.map((event) => <li key={event.id}><time dateTime={event.occurredAt}>{formatTime(event.occurredAt)}</time><span /><div><strong>{event.label}</strong><p>{event.detail}</p><small>{event.actor} · {event.packageVersion}</small></div></li>)}</ol><div className="boundary-note"><strong>Submission boundary</strong><p>DARJ seals an exact package, simulates DSC readiness and submits only through a mocked MCA adapter. A lost response is retried with the same idempotency key, producing one Rasid and one durable custody record.</p></div></section>
+    </>}
+  </section>;
+}
+
 function PrepareScreen({ state, form, saveState, busy, online, storageReady, conflict, uploadProgress, onChange, onJaanch, onResolveConflict, onUpload, onPauseUpload, onMasterReview, onExport, onImport, onFieldFocus }: {
   state: AppState; form: FormShape; saveState: string; busy: string; online: boolean; storageReady: boolean; conflict: DraftConflict | null;
   uploadProgress: Record<string, UploadProgress>;
@@ -999,9 +1113,37 @@ function PrepareScreen({ state, form, saveState, busy, online, storageReady, con
   onUpload: (slot: string, file: File) => void; onPauseUpload: (slot: string) => void; onMasterReview: (choice: 'accept' | 'keep') => void;
   onExport: () => void; onImport: (file: File) => void; onFieldFocus: (fieldId: string) => void;
 }) {
+  const [activeSection, setActiveSection] = useState<(typeof PREPARE_SECTION_IDS)[number]>('company');
+  useEffect(() => {
+    let frame = 0;
+    const update = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        let current: (typeof PREPARE_SECTION_IDS)[number] = 'company';
+        let nearestDistance = Number.POSITIVE_INFINITY;
+        for (const id of PREPARE_SECTION_IDS) {
+          const element = document.getElementById(id);
+          if (!element) continue;
+          const rect = element.getBoundingClientRect();
+          if (rect.bottom <= 190) continue;
+          const distance = Math.abs(rect.top - 190);
+          if (distance < nearestDistance) {
+            current = id;
+            nearestDistance = distance;
+          }
+        }
+        if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) current = 'attachments';
+        setActiveSection(current);
+      });
+    };
+    update();
+    window.addEventListener('scroll', update, { passive: true });
+    window.addEventListener('resize', update);
+    return () => { cancelAnimationFrame(frame); window.removeEventListener('scroll', update); window.removeEventListener('resize', update); };
+  }, []);
   return (
     <section className="prepare-grid" aria-labelledby="prepare-title">
-      <aside className="section-index"><p className="eyebrow">Prepare</p><nav aria-label="Form sections"><a className="active" href="#company">01 Company</a><a href="#financials">02 Financials</a><a href="#governance">03 Governance</a><a href="#attachments">04 Attachments</a></nav></aside>
+      <aside className="section-index"><p className="eyebrow">Prepare</p><nav aria-label="Form sections">{PREPARE_SECTION_IDS.map((id, index) => <a key={id} className={activeSection === id ? 'active' : ''} aria-current={activeSection === id ? 'location' : undefined} href={`#${id}`} onClick={() => setActiveSection(id)}>{String(index + 1).padStart(2, '0')} {id === 'company' ? 'Company' : id === 'financials' ? 'Financials' : id === 'governance' ? 'Governance' : 'Attachments'}</a>)}</nav></aside>
       <div className="form-column">
         <div className="page-heading compact-heading"><div><p className="eyebrow">Draft v{state.draft?.version ?? 17}</p><h1 id="prepare-title">Prepare AOC-4</h1></div><Status label={saveState} tone={saveState.includes('Offline') || saveState.includes('Conflict') ? 'attention' : saveState.includes('Syncing') ? 'progress' : 'durable'} /></div>
         <p className="scope-note">This is a limited DARJ filing schema. It does not determine form applicability or legal compliance.</p>
@@ -1073,7 +1215,7 @@ function RasidScreen({ state, busy, online, onPay, onStatus }: { state: AppState
   const receipt = state.receipt;
   if (!receipt) return null;
   const paid = state.payment?.state === 'PAID';
-  return <section className="page-section receipt-page" aria-labelledby="rasid-title"><div className="page-heading"><div><p className="eyebrow">Rasid · रसीद</p><h1 id="rasid-title">The exact package is in DARJ custody.</h1></div><button className="secondary print-button" onClick={() => window.print()}>Print or save receipt</button></div><article className="receipt"><header><Wordmark compact /><div><span>{receipt.receiptId}</span><small>INDEPENDENT MCA21 FILING WORKSPACE · SAMPLE DATA</small></div></header><div className="receipt-hero"><div className="custody-mark" aria-hidden="true">✓</div><div><p>RECEIVED INTO DARJ CUSTODY</p><time dateTime={receipt.receivedAt}>{formatReceiptTime(receipt.receivedAt)}</time></div></div><dl><RecordDefinition label="Receipt" value={receipt.receiptId} mono /><RecordDefinition label="Package" value={`${receipt.packageId} · v${state.package?.version ?? 23}`} mono /><RecordDefinition label="Package hash" value={receipt.packageHash} mono /><RecordDefinition label="Form" value="MCA21 AOC-4 · FY 2025-26" /><RecordDefinition label="Company" value="Aster Components Private Limited" /></dl><p className="receipt-disclaimer">This receipt proves that this exact sample package entered DARJ custody at this time. It is not an MCA21 acknowledgement, legal acceptance or proof of statutory timeliness.</p></article><div className="state-separation"><div><span className="status-mark durable" /><div><small>Custody</small><strong>RECEIVED</strong><p>Immutable Rasid recorded.</p></div></div><div><span className={`status-mark ${paid ? 'durable' : 'progress'}`} /><div><small>Payment</small><strong>{paid ? 'PAID · RECONCILED' : 'PENDING'}</strong><p>{paid ? 'Sample approval recorded on the server.' : 'Separate payment simulation.'}</p></div></div><div><span className="status-mark progress" /><div><small>Processing</small><strong>{state.processingJob?.state ?? (paid ? 'QUEUED' : 'WAITING FOR PAYMENT')}</strong><p>Receipt is not acceptance.</p></div></div></div>{!paid ? <div className="payment-panel"><div className="demo-banner">PAYMENT SIMULATION. NO MONEY OR PAYMENT DETAILS.</div><div className="payment-body"><div><p className="eyebrow">Illustrative fee</p><strong className="amount">₹6,000.00</strong><p>No card, UPI, bank, OTP or personal data is collected.</p></div><button className="primary" onClick={onPay} disabled={busy === 'payment' || !online}>{busy === 'payment' ? 'Reconciling…' : !online ? 'Reconnect to approve payment' : 'Approve simulated payment'} <span aria-hidden="true">→</span></button></div></div> : <div className="action-bar"><div><strong>Payment reconciled from the server</strong><small>PAID is not ACCEPTED. Processing remains separate.</small></div><button className="primary" onClick={onStatus}>Track processing <span aria-hidden="true">→</span></button></div>}</section>;
+  return <section className="page-section receipt-page" aria-labelledby="rasid-title"><div className="page-heading"><div><p className="eyebrow">Rasid · रसीद</p><h1 id="rasid-title">The exact package is in DARJ custody.</h1></div><a className="secondary receipt-download" href={`${API}?export=receipt`}>Download receipt PDF</a></div><article className="receipt"><header><Wordmark compact /><div><span>{receipt.receiptId}</span><small>INDEPENDENT MCA21 FILING WORKSPACE · SAMPLE DATA</small></div></header><div className="receipt-hero"><div className="custody-mark" aria-hidden="true">✓</div><div><p>RECEIVED INTO DARJ CUSTODY</p><time dateTime={receipt.receivedAt}>{formatReceiptTime(receipt.receivedAt)}</time></div></div><dl><RecordDefinition label="Receipt" value={receipt.receiptId} mono /><RecordDefinition label="Sample SRN" value={receipt.srn} mono /><RecordDefinition label="Package" value={`${receipt.packageId} · v${state.package?.version ?? 23}`} mono /><RecordDefinition label="Package hash" value={receipt.packageHash} mono /><RecordDefinition label="Form" value="MCA21 AOC-4 · FY 2025-26" /><RecordDefinition label="Company" value="Aster Components Private Limited" /></dl><p className="receipt-disclaimer">This receipt proves that this exact sample package entered DARJ custody at this time. The SRN is generated by the mocked adapter. Neither is an MCA21 acknowledgement, legal acceptance or proof of statutory timeliness.</p></article><div className="state-separation"><div><span className="status-mark durable" /><div><small>Custody</small><strong>RECEIVED</strong><p>Immutable Rasid recorded.</p></div></div><div><span className={`status-mark ${paid ? 'durable' : 'progress'}`} /><div><small>Payment</small><strong>{paid ? 'PAID · RECONCILED' : 'PENDING'}</strong><p>{paid ? 'Sample approval recorded on the server.' : 'Separate payment simulation.'}</p></div></div><div><span className="status-mark progress" /><div><small>Processing</small><strong>{state.processingJob?.state ?? (paid ? 'QUEUED' : 'WAITING FOR PAYMENT')}</strong><p>Receipt is not acceptance.</p></div></div></div>{!paid ? <div className="payment-panel"><div className="demo-banner">PAYMENT SIMULATION. NO MONEY OR PAYMENT DETAILS.</div><div className="payment-body"><div><p className="eyebrow">Illustrative fee</p><strong className="amount">₹6,000.00</strong><p>No card, UPI, bank, OTP or personal data is collected.</p></div><button className="primary" onClick={onPay} disabled={busy === 'payment' || !online}>{busy === 'payment' ? 'Reconciling…' : !online ? 'Reconnect to approve payment' : 'Approve simulated payment'} <span aria-hidden="true">→</span></button></div></div> : <div className="action-bar"><div><strong>Payment reconciled from the server</strong><small>PAID is not ACCEPTED. Processing remains separate.</small></div><button className="primary" onClick={onStatus}>Track processing <span aria-hidden="true">→</span></button></div>}</section>;
 }
 
 function StatusScreen({ state, accepted, busy, online, onPause, onResume }: { state: AppState; accepted: boolean; busy: string; online: boolean; onPause: () => void; onResume: () => void }) {
@@ -1266,6 +1408,7 @@ function fieldLabel(path: string) {
 function screenFromPath(pathname: string): Screen {
   if (pathname === '/reviewer') return 'reviewer';
   if (pathname === '/filings/new') return 'newFiling';
+  if (pathname.includes('/studio')) return 'studio';
   if (pathname === '/services') return 'services';
   if (pathname === '/company') return 'company';
   if (pathname === '/documents') return 'documents';
@@ -1289,7 +1432,7 @@ function screenFromPath(pathname: string): Screen {
 
 function pathForScreen(screen: Screen, caseId = 'DARJ-DEMO-AOC4-01') {
   return ({
-    login: '/login', reviewer: '/reviewer', filings: '/filings', newFiling: '/filings/new', services: '/services', company: '/company', documents: '/documents', payments: '/payments', guidance: '/guidance', about: '/about', prepare: `/filings/${caseId}/prepare`, jaanch: `/filings/${caseId}/jaanch`,
+    login: '/login', reviewer: '/reviewer', filings: '/filings', studio: `/filings/${caseId}/studio`, newFiling: '/filings/new', services: '/services', company: '/company', documents: '/documents', payments: '/payments', guidance: '/guidance', about: '/about', prepare: `/filings/${caseId}/prepare`, jaanch: `/filings/${caseId}/jaanch`,
     mohar: `/filings/${caseId}/mohar`, sign: `/filings/${caseId}/sign`, rasid: `/filings/${caseId}/rasid/DARJ-RASID-8129`,
     status: `/filings/${caseId}/status`, lineage: `/filings/${caseId}/lineage`, recovery: '/recovery', evidence: '/evidence', limitations: '/limitations', demoControls: '/demo-controls',
   } satisfies Record<Screen, string>)[screen];

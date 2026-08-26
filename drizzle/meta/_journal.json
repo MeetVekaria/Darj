@@ -29,6 +29,20 @@
       "when": 1787656179545,
       "tag": "0003_real_nico_minoru",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1787768900732,
+      "tag": "0004_fresh_human_robot",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1787769696192,
+      "tag": "0005_fine_eternals",
+      "breakpoints": true
     }
   ]
 }

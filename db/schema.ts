@@ -25,6 +25,16 @@ export const serviceDrafts = sqliteTable('service_drafts', {
   index('idx_service_drafts_run_updated').on(table.runId, table.updatedAt),
 ]);
 
+export const guidedFilingSessions = sqliteTable('guided_filing_sessions', {
+  runId: text('run_id').notNull(),
+  caseId: text('case_id').notNull(),
+  stateJson: text('state_json').notNull(),
+  updatedAt: text('updated_at').notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.runId, table.caseId] }),
+  index('idx_guided_filing_updated').on(table.runId, table.updatedAt),
+]);
+
 export const draftSnapshots = sqliteTable('draft_snapshots', {
   runId: text('run_id').notNull(),
   caseId: text('case_id').notNull(),
@@ -51,6 +61,23 @@ export const attachments = sqliteTable('attachments', {
 }, (table) => [
   primaryKey({ columns: [table.runId, table.caseId, table.slot] }),
   uniqueIndex('uniq_attachment_object_key').on(table.objectKey),
+]);
+
+export const attachmentVersions = sqliteTable('attachment_versions', {
+  runId: text('run_id').notNull(),
+  caseId: text('case_id').notNull(),
+  slot: text('slot').notNull(),
+  version: integer('version').notNull(),
+  filename: text('filename').notNull(),
+  objectKey: text('object_key').notNull(),
+  bytes: integer('bytes').notNull(),
+  mime: text('mime').notNull(),
+  sha256: text('sha256').notNull(),
+  verifiedAt: text('verified_at').notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.runId, table.caseId, table.slot, table.version] }),
+  uniqueIndex('uniq_attachment_version_object_key').on(table.objectKey),
+  index('idx_attachment_versions_slot').on(table.runId, table.caseId, table.slot, table.version),
 ]);
 
 export const uploadSessions = sqliteTable('upload_sessions', {
