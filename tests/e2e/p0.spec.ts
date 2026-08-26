@@ -88,7 +88,7 @@ test('two same-credential reviewer sessions remain isolated', async ({ browser }
     ]) as [{ draft: { form: { boardMeetings: string } } }, { draft: { form: { boardMeetings: string } } }];
     expect(afterA.draft.form.boardMeetings).toBe('5');
     expect(afterB.draft.form.boardMeetings).toBe('6');
-    await pageA.getByRole('button', { name: /Reset review workspace/i }).first().click();
+    await pageA.getByRole('button', { name: /Reset workspace/i }).first().click();
     const untouchedB = await pageB.evaluate(() => fetch('/api/darj').then((response) => response.json())) as { draft: { form: { boardMeetings: string } } };
     expect(untouchedB.draft.form.boardMeetings).toBe('6');
   } finally {
@@ -131,8 +131,8 @@ test('stale server draft shows a field-level conflict and explicit choice', asyn
     await expect(first.getByText('Saved locally · Synced').first()).toBeVisible();
     await stale.getByLabel('Board meetings').fill('6');
     await expect(stale.getByRole('heading', { name: /Choose which value/i })).toBeVisible();
-    await expect(stale.getByText('Local').first()).toBeVisible();
-    await expect(stale.getByText('Server').first()).toBeVisible();
+    await expect(stale.locator('.conflict-panel').getByText('Local', { exact: true })).toBeVisible();
+    await expect(stale.locator('.conflict-panel').getByText('Server', { exact: true })).toBeVisible();
     await stale.getByRole('button', { name: /Keep local as new version/i }).click();
     await expect(stale.getByText('Saved locally · Synced').first()).toBeVisible();
   } finally { await context.close(); }
@@ -163,7 +163,7 @@ test('P0 upload verifies stored PDF and edit after signing creates v24', async (
   await fixAndCheck(page); await sealAndSign(page);
   await page.getByRole('button', { name: /Edit as new version/i }).click();
   await page.getByLabel('Revenue (₹)').fill('124800001');
-  await expect(page.getByText('SIGNATURE INVALID · NEW VERSION REQUIRED')).toBeVisible();
+  await expect(page.locator('.signature-warning').getByText('SIGNATURE INVALID · NEW VERSION REQUIRED')).toBeVisible();
   await page.getByRole('button', { name: /Run Jaanch/i }).click();
   await page.getByRole('button', { name: /Create Mohar/i }).click();
   await expect(page.getByText('DARJ-PKG-000024 · v24')).toBeVisible();
@@ -232,8 +232,17 @@ test('security headers, cookie boundaries, and CSRF rejection protect mutations'
 
 test('public and authenticated P0 routes have no serious Axe violations', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'desktop-chromium', 'Accessibility sweep runs once.');
-  for (const path of ['/login', '/evidence', '/limitations']) {
+  const publicRoutes = ['/login', '/services', '/reviewer', '/evidence', '/limitations'];
+  for (const path of publicRoutes) {
     await page.goto(path);
+    const result = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa']).analyze();
+    expect(result.violations.filter((violation) => ['serious', 'critical'].includes(violation.impact ?? ''))).toEqual([]);
+  }
+  await page.goto('/login');
+  await page.getByRole('button', { name: /Accessibility · Dark mode/i }).click();
+  for (const path of publicRoutes) {
+    await page.goto(path);
+    await expect(page.getByRole('button', { name: /Accessibility · Light mode/i })).toBeVisible();
     const result = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa']).analyze();
     expect(result.violations.filter((violation) => ['serious', 'critical'].includes(violation.impact ?? ''))).toEqual([]);
   }

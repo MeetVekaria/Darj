@@ -112,7 +112,7 @@ test('sign out clears the authenticated cookies and keeps recoverable local work
   await login(page); await openPrepare(page);
   await page.getByLabel('Board meetings').fill('6');
   await expect(page.getByText('Saved locally · Synced').first()).toBeVisible();
-  await page.getByRole('button', { name: 'Sign out' }).first().click();
+  await page.getByRole('button', { name: /Sign Out/i }).first().click();
   await expect(page).toHaveURL(/\/login$/);
   await expect(page.getByRole('button', { name: /Open sample company workspace/i })).toBeVisible();
   const cookies = await page.context().cookies();
@@ -151,5 +151,5 @@ test('mobile insertion controls use one aligned column with no overflow', async 
   expect(new Set(widths).size).toBe(1);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(1);
-  await expect(page.getByRole('button', { name: 'Sign out' }).first()).toBeVisible();
+  await expect(page.getByRole('button', { name: /Sign Out/i }).first()).toBeVisible();
 });

@@ -44,6 +44,33 @@ test('public service directory can be browsed without signing in', async ({ page
   await expect(page.getByText(/matching services/i)).toBeVisible();
 });
 
+test('public headers stay consistent and dark surfaces remain readable', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop-chromium', 'Visual-system comparison runs once.');
+  const buttonStyle = async () => page.locator('.registry-utilities').getByRole('button', { name: 'Reviewer Guide', exact: true }).evaluate((element) => {
+    const style = getComputedStyle(element);
+    const box = element.getBoundingClientRect();
+    return { height: Math.round(box.height), color: style.color, background: style.backgroundColor, borderRadius: style.borderRadius, whiteSpace: style.whiteSpace, fontSize: style.fontSize };
+  });
+  await page.goto('/login');
+  await expect(page.locator('.registry-utilities').getByRole('button', { name: 'Reviewer Guide', exact: true })).toBeVisible();
+  const homeButton = await buttonStyle();
+  await page.goto('/services');
+  await expect(page.locator('.registry-utilities').getByRole('button', { name: 'Reviewer Guide', exact: true })).toBeVisible();
+  await page.waitForTimeout(150);
+  expect(await buttonStyle()).toEqual(homeButton);
+  expect(homeButton.whiteSpace).toBe('nowrap');
+
+  await page.getByRole('button', { name: /Accessibility · Dark mode/i }).click();
+  const surfaces = await page.locator('.directory-search, .directory-filter, .catalogue-loading, .category-grid article').evaluateAll((elements) => elements.map((element) => {
+    const style = getComputedStyle(element);
+    return { color: style.color, background: style.backgroundColor };
+  }));
+  expect(surfaces.length).toBeGreaterThan(2);
+  expect(new Set(surfaces.map((surface) => surface.background))).toEqual(new Set(['rgb(18, 29, 35)']));
+  expect(new Set(surfaces.map((surface) => surface.color))).toEqual(new Set(['rgb(241, 245, 242)']));
+  await expect(page.locator('.registry-footer')).toHaveCSS('background-color', 'rgb(17, 24, 32)');
+});
+
 test('a new MGT-7 guided intake persists in the filing register', async ({ page }) => {
   await page.goto('/login');
   await page.getByRole('button', { name: /Open sample company workspace/i }).click();

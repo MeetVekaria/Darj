@@ -170,6 +170,7 @@ type FormDataShape = typeof INITIAL_FORM;
 type JsonBody = Record<string, unknown>;
 type DatabaseRow = Record<string, unknown>;
 type AttachmentRow = { slot: string; filename: string; objectKey: string; bytes: number; mime: string; sha256: string; verifiedAt: string };
+type SeedDocument = { slot: string; filename: string; objectKey: string; bytes: Uint8Array; hash: string };
 type ValidationCheck = {
   code: string; stage: string; fieldPath: string | null; documentSlot: string | null;
   blocking: boolean; retryable: boolean; status: string; summary: string; detail: string;
@@ -265,8 +266,8 @@ async function login(body: JsonBody, request: Request) {
   const now = new Date();
   const expires = new Date(now.getTime() + 24 * 60 * 60 * 1000);
   await env.DB.prepare('INSERT INTO demo_runs (run_id, created_at, expires_at) VALUES (?, ?, ?)').bind(runId, now.toISOString(), expires.toISOString()).run();
-  await seedRun(runId);
-  const response = securedJson(await getState(runId));
+  const seeded = await seedRun(runId);
+  const response = securedJson(initialState(runId, seeded.savedAt, seeded.attachments));
   const secure = new URL(request.url).protocol === 'https:' ? '; Secure' : '';
   response.headers.append('Set-Cookie', `${COOKIE_NAME}=${encodeURIComponent(runId)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400${secure}`);
   response.headers.append('Set-Cookie', `${CSRF_COOKIE_NAME}=${encodeURIComponent(csrfToken)}; Path=/; SameSite=Strict; Max-Age=86400${secure}`);
@@ -295,20 +296,21 @@ async function consumeRateLimit(key: string, limit: number, windowMs: number): P
   return true;
 }
 
-async function seedRun(runId: string) {
-  const savedAt = new Date().toISOString();
+async function buildSeedDocuments(runId: string): Promise<SeedDocument[]> {
   const files = [
     ['financialStatements', 'DARJ-financial-statements.pdf', 'Demo financial statements'],
     ['auditorReport', 'DARJ-auditor-report.pdf', 'Demo auditor report'],
     ['boardReport', 'DARJ-board-report.pdf', 'Demo board report'],
   ] as const;
-  const documents = await Promise.all(files.map(async ([slot, filename, title]) => {
+  return Promise.all(files.map(async ([slot, filename, title]) => {
     const bytes = new TextEncoder().encode(`%PDF-1.4\n% DARJ demo document\n1 0 obj<</Type/Catalog>>endobj\n% ${title}\n%%EOF`);
-    const objectKey = `demo/${runId}/${CASE_ID}/${slot}.pdf`;
-    const hash = await sha256Hex(bytes);
-    return { slot, filename, bytes, objectKey, hash };
+    return { slot, filename, objectKey: `demo/${runId}/${CASE_ID}/${slot}.pdf`, bytes, hash: await sha256Hex(bytes) };
   }));
-  await Promise.all(documents.map((document) => env.FILES.put(document.objectKey, document.bytes, { httpMetadata: { contentType: 'application/pdf' } })));
+}
+
+async function seedRun(runId: string) {
+  const savedAt = new Date().toISOString();
+  const documents = await buildSeedDocuments(runId);
   await env.DB.batch([
     env.DB.prepare(`INSERT INTO draft_snapshots (run_id, case_id, version, base_version, form_json, changed_paths, saved_at) VALUES (?, ?, 17, 16, ?, ?, ?)`)
       .bind(runId, CASE_ID, JSON.stringify(INITIAL_FORM), JSON.stringify([]), savedAt),
@@ -318,6 +320,28 @@ async function seedRun(runId: string) {
     ...documents.map((document) => env.DB.prepare(`INSERT INTO attachments (run_id, case_id, slot, filename, object_key, bytes, mime, sha256, verified_at) VALUES (?, ?, ?, ?, ?, ?, 'application/pdf', ?, ?)`)
       .bind(runId, CASE_ID, document.slot, document.filename, document.objectKey, document.bytes.byteLength, document.hash, savedAt)),
   ]);
+  return {
+    savedAt,
+    attachments: documents.map((document) => ({ slot: document.slot, filename: document.filename, objectKey: document.objectKey, bytes: document.bytes.byteLength, mime: 'application/pdf', sha256: document.hash, verifiedAt: savedAt })),
+  };
+}
+
+function initialState(runId: string, savedAt: string, attachments: AttachmentRow[]) {
+  return {
+    runId, caseId: CASE_ID,
+    draft: { version: 17, form: INITIAL_FORM, savedAt },
+    attachments: attachments.map((attachment) => ({ slot: attachment.slot, filename: attachment.filename, bytes: attachment.bytes, mime: attachment.mime, sha256: attachment.sha256, verifiedAt: attachment.verifiedAt })),
+    package: null, packageCurrent: false,
+    signature: null, signatureValid: false,
+    receipt: null, payment: null, processingJob: null,
+    processorPaused: false, uploadPauseArmed: false, uploadSessions: [],
+    master: {
+      pinnedVersion: 7, pinnedOffice: INITIAL_FORM.registeredOffice,
+      currentVersion: 7, currentOffice: INITIAL_FORM.registeredOffice,
+      source: 'Sample company master', reviewState: 'CURRENT', detectedAt: null, reviewedAt: null,
+    },
+    correction: null, lineage: [], features: featureFlags(), events: [], serviceDrafts: [],
+  };
 }
 
 async function saveDraft(runId: string, body: JsonBody) {
@@ -730,10 +754,18 @@ async function handleUpload(request: Request, runId: string) {
 async function verifyAttachments(runId: string): Promise<AttachmentRow[]> {
   const attachments = await getAttachments(runId);
   if (attachments.length !== 3) throw new Error('DARJ_ATTACHMENT_UPLOAD_INCOMPLETE|All three sample PDF slots must be complete before sealing.');
+  const seeded = await buildSeedDocuments(runId);
   await Promise.all(attachments.map(async (attachment) => {
     const object = await env.FILES.get(attachment.objectKey);
-    if (!object) throw new Error('DARJ_ATTACHMENT_UPLOAD_INCOMPLETE|A stored attachment is unavailable. Upload it again; form values are unchanged.');
-    const bytes = new Uint8Array(await object.arrayBuffer());
+    let bytes: Uint8Array;
+    if (object) {
+      bytes = new Uint8Array(await object.arrayBuffer());
+    } else {
+      const seed = seeded.find((document) => document.objectKey === attachment.objectKey && document.filename === attachment.filename && document.hash === attachment.sha256 && document.bytes.byteLength === attachment.bytes);
+      if (!seed) throw new Error('DARJ_ATTACHMENT_UPLOAD_INCOMPLETE|A stored attachment is unavailable. Upload it again; form values are unchanged.');
+      bytes = seed.bytes;
+      await env.FILES.put(seed.objectKey, bytes, { httpMetadata: { contentType: 'application/pdf' } });
+    }
     const serverHash = await sha256Hex(bytes);
     if (!sniffDemoPdf(bytes) || bytes.byteLength !== attachment.bytes || serverHash !== attachment.sha256) throw new Error('DARJ_ATTACHMENT_HASH_MISMATCH|A stored attachment failed authoritative server verification.');
   }));
