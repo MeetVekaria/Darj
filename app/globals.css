@@ -21,7 +21,7 @@
 }
 
 * { box-sizing: border-box; }
-html { background: var(--canvas); }
+html { background: var(--canvas); scroll-padding-top: 128px; }
 body {
   margin: 0;
   color: var(--ink);
@@ -35,8 +35,9 @@ a { color: inherit; }
 
 .prototype-strip {
   position: fixed;
-  z-index: 20;
+  z-index: 50;
   inset: 0 0 auto;
+  height: 34px;
   min-height: 32px;
   padding: 8px 18px 7px;
   color: white;
@@ -246,7 +247,7 @@ button:disabled { cursor: wait; opacity: .62; }
 .disclosure-button { width: auto; border: 0; cursor: pointer; }
 .app-header {
   position: sticky;
-  z-index: 15;
+  z-index: 40;
   top: 34px;
   min-height: 82px;
   padding: 0 clamp(18px, 4vw, 64px);
@@ -255,7 +256,7 @@ button:disabled { cursor: wait; opacity: .62; }
   align-items: center;
   gap: 28px;
   border-bottom: 1px solid var(--line-strong);
-  background: color-mix(in srgb, var(--surface) 97%, transparent);
+  background: var(--surface);
 }
 .header-actions { display: flex; align-items: center; justify-content: flex-end; gap: 18px; }
 .header-actions .text-button { white-space: nowrap; }
@@ -280,13 +281,15 @@ button:disabled { cursor: wait; opacity: .62; }
 .header-search input { min-width: 0; width: 100%; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 13px; }
 .header-search:focus-within { border-color: var(--blue-700); box-shadow: inset 0 -2px 0 var(--blue-700); }
 .text-button { min-height: 44px; padding: 5px 0; border: 0; color: var(--blue-700); background: transparent; font-weight: 650; text-decoration: underline; text-underline-offset: 4px; cursor: pointer; }
-.app-main { min-height: calc(100svh - 190px); }
+.app-main { min-height: calc(100svh - 190px); grid-column: 2; }
 .platform-frame { width: 100%; display: grid; grid-template-columns: 224px minmax(0, 1fr); }
 .platform-nav {
-  position: sticky;
-  z-index: 10;
-  top: 116px;
-  min-height: calc(100svh - 116px);
+  position: fixed;
+  z-index: 30;
+  inset: 116px auto 0 0;
+  width: 224px;
+  align-self: start;
+  min-height: 0;
   height: calc(100svh - 116px);
   padding: 30px 18px 24px;
   display: flex;
@@ -294,6 +297,8 @@ button:disabled { cursor: wait; opacity: .62; }
   border-right: 1px solid var(--line-strong);
   background: var(--government-navy);
   color: white;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .platform-nav-label { margin: 0 12px 18px; color: #9ba8a0; font: 700 10px/1.3 "IBM Plex Mono", ui-monospace, monospace; letter-spacing: .1em; text-transform: uppercase; }
 .platform-nav nav { display: grid; gap: 4px; }
@@ -724,7 +729,7 @@ button:disabled { cursor: wait; opacity: .62; }
 .limitations-list { margin: 0; padding: 0; list-style: none; border-top: 2px solid var(--ink); }
 .limitations-list li { min-height: 96px; padding: 18px 0; display: grid; grid-template-columns: 70px 1fr; gap: 22px; border-bottom: 1px solid var(--line); }
 .limitations-list p { max-width: 76ch; margin: 0; line-height: 1.55; }
-.app-footer { min-height: 90px; padding: 24px clamp(18px, 4vw, 64px); display: flex; justify-content: space-between; align-items: center; gap: 30px; color: white; background: #111820; }
+.app-footer { min-height: 90px; margin-left: 224px; padding: 24px clamp(18px, 4vw, 64px); display: flex; justify-content: space-between; align-items: center; gap: 30px; color: white; background: #111820; }
 .public-shell .app-header { grid-template-columns: auto 1fr auto; }
 .app-footer nav { display: flex; gap: 20px; }
 .app-footer button { border: 0; color: white; background: transparent; text-decoration: underline; cursor: pointer; }
@@ -739,11 +744,14 @@ button:disabled { cursor: wait; opacity: .62; }
 }
 
 @media (max-width: 1080px) {
+  html { scroll-padding-top: 184px; }
   .platform-frame { grid-template-columns: 1fr; }
-  .platform-nav { position: sticky; top: 116px; min-height: 58px; height: auto; padding: 8px 18px; overflow-x: auto; border-right: 0; border-bottom: 1px solid #344039; }
+  .platform-nav { position: sticky; inset: auto; top: 116px; width: auto; min-height: 58px; height: auto; padding: 8px 18px; overflow-x: auto; border-right: 0; border-bottom: 1px solid #344039; }
   .platform-nav-label, .platform-nav-foot { display: none; }
   .platform-nav nav { width: max-content; display: flex; gap: 4px; }
   .platform-nav nav button { min-height: 42px; padding: 0 14px; grid-template-columns: auto 1fr; }
+  .app-main { grid-column: 1; }
+  .app-footer { margin-left: 0; }
   .app-header { grid-template-columns: minmax(220px, auto) minmax(200px, 1fr) auto; gap: 14px; }
   .header-context, .header-state, .filing-register-link { display: none; }
   .prepare-grid { grid-template-columns: 150px minmax(0, 1fr); }
@@ -912,7 +920,7 @@ button:disabled { cursor: wait; opacity: .62; }
 [data-theme='dark'] .issue-panel,
 [data-theme='dark'] .package-index { color: var(--ink); background: var(--surface); }
 [data-theme='dark'] .action-bar { background: color-mix(in srgb, var(--canvas) 96%, transparent); }
-[data-theme='dark'] .app-header { background: color-mix(in srgb, var(--surface) 96%, transparent); }
+[data-theme='dark'] .app-header { background: var(--surface); }
 [data-theme='dark'] input,
 [data-theme='dark'] textarea,
 [data-theme='dark'] select { color: var(--ink); background: var(--surface); }
@@ -1128,7 +1136,7 @@ button:disabled { cursor: wait; opacity: .62; }
 }
 .command-main { min-width: 0; }
 .command-main > .eyebrow { margin-bottom: 8px; color: var(--blue-700); font-size: 10px; }
-.command-main h2 { max-width: 970px; margin: 0; font-size: clamp(31px, 3.25vw, 48px); line-height: 1.02; letter-spacing: -.043em; font-weight: 690; }
+.command-main h2 { max-width: 760px; margin: 0; font-size: clamp(26px, 2.4vw, 32px); line-height: 1.12; letter-spacing: -.025em; font-weight: 500; }
 .command-search { height: 50px; margin-top: 15px; display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; align-items: center; background: var(--surface); border: 2px solid var(--government-navy); }
 .command-search label { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 .command-search > span { color: var(--government-navy); font-size: 22px; text-align: center; }
@@ -1167,7 +1175,7 @@ button:disabled { cursor: wait; opacity: .62; }
 .home-section { margin: 58px clamp(18px, 3.6vw, 54px) 0; }
 .home-section-heading { padding-bottom: 18px; display: flex; align-items: end; justify-content: space-between; gap: 28px; border-bottom: 2px solid var(--government-navy); }
 .home-section-heading .eyebrow { margin-bottom: 7px; }
-.home-section-heading h2 { margin: 0; font-size: clamp(30px, 3.6vw, 48px); line-height: 1; letter-spacing: -.04em; }
+.home-section-heading h2 { margin: 0; font-size: clamp(26px, 2.6vw, 32px); line-height: 1.12; letter-spacing: -.025em; font-weight: 500; }
 .home-section-heading > p { max-width: 590px; margin: 0; color: var(--ink-muted); line-height: 1.5; }
 .public-service-grid { display: grid; grid-template-columns: repeat(4, 1fr); border-left: 1px solid var(--line-strong); }
 .public-service-grid > button { min-height: 190px; padding: 20px; display: flex; flex-direction: column; align-items: flex-start; border: 0; border-right: 1px solid var(--line-strong); border-bottom: 1px solid var(--line-strong); border-radius: 0; color: var(--ink); background: var(--surface); text-align: left; cursor: pointer; }
@@ -1275,7 +1283,7 @@ button:disabled { cursor: wait; opacity: .62; }
   .operational-notice strong + span::before { display: none; }
   .command-centre { padding-top: 14px; display: flex; flex-direction: column; gap: 12px; }
   .command-main > .eyebrow { display: none; }
-  .command-main h2 { font-size: 27px; line-height: 1.04; }
+  .command-main h2 { font-size: 26px; line-height: 1.12; }
   .command-search { height: 46px; margin-top: 10px; grid-template-columns: 30px minmax(0, 1fr) auto; }
   .command-search input, .command-search button { height: 42px; }
   .command-search input { font-size: 12px; }
@@ -1299,7 +1307,7 @@ button:disabled { cursor: wait; opacity: .62; }
   .registry-stats article:nth-child(2) { border-right: 0; }
   .home-section { margin-top: 46px; }
   .home-section-heading { align-items: flex-start; flex-direction: column; }
-  .home-section-heading h2 { font-size: 34px; }
+  .home-section-heading h2 { font-size: 28px; }
   .public-service-grid, .company-snapshot, .home-information-grid { grid-template-columns: 1fr; }
   .public-service-grid > button { min-height: 155px; }
   .company-summary { border-right: 0; border-bottom: 1px solid #587292; }

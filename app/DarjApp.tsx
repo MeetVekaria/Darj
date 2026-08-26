@@ -59,6 +59,21 @@ const EMPTY_SERVICE_CATEGORIES: ServiceCategory[] = [];
 const EMPTY_CATALOGUE_SERVICES: CatalogService[] = [];
 
 const API = '/api/darj';
+const SESSION_HINT = 'darj-session-active';
+
+function hasSessionHint() {
+  try { return window.localStorage.getItem(SESSION_HINT) === 'true'; }
+  catch { return false; }
+}
+
+function setSessionHint(active: boolean) {
+  try {
+    if (active) window.localStorage.setItem(SESSION_HINT, 'true');
+    else window.localStorage.removeItem(SESSION_HINT);
+  } catch {
+    // The server session remains authoritative when browser storage is unavailable.
+  }
+}
 
 export default function DarjApp() {
   const [screen, setScreen] = useState<Screen>('login');
@@ -121,6 +136,7 @@ export default function DarjApp() {
     catch { return null; }
     if (!response.ok) {
       if (response.status === 401) {
+        setSessionHint(false);
         const local = await safeReadLocalDraft('DARJ-DEMO-AOC4-01');
         setHasLocalRecovery(Boolean(local));
         setSessionExpired(Boolean(local));
@@ -147,6 +163,7 @@ export default function DarjApp() {
       setHasLocalRecovery(Boolean(local));
       const initialScreen = screenFromPath(window.location.pathname);
       if (initialScreen === 'reviewer' || initialScreen === 'evidence' || initialScreen === 'limitations' || initialScreen === 'services') return;
+      if (initialScreen === 'login' && !hasSessionHint()) return;
       const restored = await refresh();
       if (restored) setScreen(screenFromPath(window.location.pathname) === 'login' ? 'filings' : screenFromPath(window.location.pathname));
     })();
@@ -210,6 +227,7 @@ export default function DarjApp() {
     if (!response.ok) {
       if (payload.error) setError(payload.error);
       if (response.status === 401) {
+        setSessionHint(false);
         setSessionExpired(true);
         setHasLocalRecovery(Boolean(await safeReadLocalDraft(state?.caseId ?? 'DARJ-DEMO-AOC4-01')));
         navigate('login');
@@ -225,6 +243,7 @@ export default function DarjApp() {
     try {
       const recovery = await safeReadLocalDraft('DARJ-DEMO-AOC4-01');
       const next = await post('login', { email: 'meet@darj.demo', password: 'darj2026' }) as unknown as AppState;
+      setSessionHint(true);
       setState(next);
       if (next.draft) {
         if (recovery && sessionExpired && isValidImportedForm(recovery.form)) {
@@ -450,6 +469,7 @@ export default function DarjApp() {
       for (const upload of activeUploads.current.values()) await upload.abort();
       activeUploads.current.clear();
       await post('logout');
+      setSessionHint(false);
       setState(null); setForm(null); setChecks([]); setConflict(null); setSessionExpired(false);
       setScreen('login');
       window.history.pushState({}, '', '/login');
@@ -780,8 +800,8 @@ function LoginScreen({ theme, onTheme, hydrated, busy, onEnter, onBrowse, onRevi
 
       <section className="command-centre" aria-labelledby="login-title">
         <div className="command-main">
-          <p className="eyebrow">WHAT DO YOU NEED TO DO?</p>
-          <h2 id="login-title">Corporate filings, company records and transaction status—in one clear workspace.</h2>
+          <p className="eyebrow">CORPORATE FILING SERVICES</p>
+          <h2 id="login-title">File company forms, view records and track transactions</h2>
           <form className="command-search" role="search" onSubmit={(event) => { event.preventDefault(); onBrowse(searchQuery); }}>
             <label htmlFor="public-service-search">Search services, forms, companies or transaction references</label>
             <span aria-hidden="true">⌕</span>
@@ -904,7 +924,7 @@ function ServiceDirectoryScreen({ query, category, selectedKey, onQuery, onCateg
   const selected = catalogueServices.find((service) => `${service.categoryId}:${service.code}` === selectedKey) ?? catalogueServices[0];
   const showOverview = category === 'all' && !normalized;
   return <section className="page-section service-directory" aria-labelledby="services-title">
-    <div className="directory-hero"><div><p className="eyebrow">MCA service landscape · reference catalogue</p><h1 id="services-title">Start with the task, not the portal map.</h1><p>DARJ organises {catalogueServices.length || 143} MCA forms and services into {categories.length || 15} plain-language categories. Five common services can begin with a durable intake; AOC-4 continues through the complete filing journey.</p><div className="directory-hero-actions"><button className="primary" onClick={onStart}>Start a new filing <span aria-hidden="true">→</span></button></div></div><div className="directory-stat"><strong>{catalogueServices.length || 143}</strong><span>forms and services mapped</span><small>Based on MCA navigation, help material and service groupings</small></div></div>
+    <div className="directory-hero"><div><p className="eyebrow">MCA SERVICE CATALOGUE</p><h1 id="services-title">Find an MCA form or service</h1><p>Browse {catalogueServices.length || 143} MCA forms and services in {categories.length || 15} plain language categories. Five common services include a guided intake. AOC-4 includes the complete filing journey.</p><div className="directory-hero-actions"><button className="primary" onClick={onStart}>Start a new filing <span aria-hidden="true">→</span></button></div></div><div className="directory-stat"><strong>{catalogueServices.length || 143}</strong><span>forms and services mapped</span><small>Based on MCA navigation, help material and service groupings</small></div></div>
     <div className="directory-tools"><label className="directory-search"><span>Search the catalogue</span><input value={query} onChange={(event) => onQuery(event.target.value)} placeholder="Try ‘change director’, ‘annual return’ or ‘certified copy’" /></label><label className="directory-filter"><span>Show category</span><select value={category} onChange={(event) => onCategory(event.target.value)}><option value="all">All {categories.length || 15} categories</option>{categories.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.services.length}</option>)}</select></label></div>
     <div className="catalogue-layout">
       <div className="catalogue-results">

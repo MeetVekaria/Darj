@@ -3,7 +3,8 @@ import { expect, test } from '@playwright/test';
 test('public entry is a registry command centre, themeable and links to the reviewer guide', async ({ page }) => {
   await page.goto('/login');
   await expect(page.getByRole('heading', { name: 'MCA21 Corporate Services' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Corporate filings, company records and transaction status—in one clear workspace.' })).toBeVisible();
+  if ((await page.viewportSize())!.width > 760) await expect(page.getByText('CORPORATE FILING SERVICES')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'File company forms, view records and track transactions' })).toBeVisible();
   await expect(page.getByPlaceholder('Search services, forms, companies or transaction references')).toBeVisible();
   await page.getByRole('button', { name: /Accessibility · Dark mode/i }).click();
   await expect(page.getByRole('button', { name: /Accessibility · Light mode/i })).toBeVisible();
@@ -13,12 +14,35 @@ test('public entry is a registry command centre, themeable and links to the revi
   await expect(page.locator('.reviewer-links a')).toHaveCount(5);
 });
 
+test('a clean public visit does not probe the authenticated API', async ({ page }) => {
+  const calls: string[] = [];
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname === '/api/darj') calls.push(`${request.method()} ${request.url()}`);
+  });
+  await page.goto('/login');
+  await expect(page.getByRole('heading', { name: 'File company forms, view records and track transactions' })).toBeVisible();
+  await page.waitForTimeout(250);
+  expect(calls).toEqual([]);
+});
+
 test('first viewport exposes context, services, data and sample access', async ({ page }, testInfo) => {
   await page.goto('/login');
   if (testInfo.project.name === 'desktop-chromium') {
     await page.setViewportSize({ width: 1366, height: 768 });
     await expect(page.getByText('Synthetic data · Independent prototype · Not affiliated with the Ministry of Corporate Affairs')).toBeVisible();
     await expect(page.locator('.quick-actions button')).toHaveCount(8);
+    const headline = await page.locator('.command-main h2').evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { size: Number.parseFloat(style.fontSize), weight: style.fontWeight };
+    });
+    expect(headline.size).toBeLessThanOrEqual(32);
+    expect(headline.weight).toBe('500');
+    const servicesHeading = await page.locator('.home-section-heading h2').first().evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { size: Number.parseFloat(style.fontSize), weight: style.fontWeight };
+    });
+    expect(servicesHeading.size).toBeLessThanOrEqual(32);
+    expect(servicesHeading.weight).toBe('500');
     for (const button of await page.locator('.quick-actions button').all()) {
       const box = await button.boundingBox();
       expect(box && box.y + box.height).toBeLessThanOrEqual(768);
@@ -39,9 +63,55 @@ test('first viewport exposes context, services, data and sample access', async (
 
 test('public service directory can be browsed without signing in', async ({ page }) => {
   await page.goto('/services');
-  await expect(page.getByRole('heading', { name: 'Start with the task, not the portal map.' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Find an MCA form or service' })).toBeVisible();
   await page.getByLabel('Search the catalogue').fill('certified copy');
   await expect(page.getByText(/matching services/i)).toBeVisible();
+});
+
+test('workspace masthead, side navigation and form anchors remain clear while scrolling', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop-chromium', 'Desktop sticky geometry runs once.');
+  await page.setViewportSize({ width: 1440, height: 800 });
+  await page.goto('/login');
+  await page.getByRole('button', { name: /Open sample company workspace/i }).click();
+  await expect(page).toHaveURL(/\/filings$/);
+
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+  const geometry = await page.evaluate(() => {
+    const header = document.querySelector<HTMLElement>('.app-header')!;
+    const strip = document.querySelector<HTMLElement>('.prototype-strip')!;
+    const nav = document.querySelector<HTMLElement>('.platform-nav')!;
+    const first = nav.querySelector<HTMLElement>('nav button:first-child')!;
+    const last = nav.querySelector<HTMLElement>('nav button:last-child')!;
+    const footer = document.querySelector<HTMLElement>('.app-footer')!;
+    const headerBox = header.getBoundingClientRect();
+    const navBox = nav.getBoundingClientRect();
+    return {
+      headerBottom: Math.round(headerBox.bottom),
+      headerTop: Math.round(headerBox.top),
+      headerBackground: getComputedStyle(header).backgroundColor,
+      stripBottom: Math.round(strip.getBoundingClientRect().bottom),
+      navTop: Math.round(navBox.top),
+      navBottom: Math.round(navBox.bottom),
+      firstTop: Math.round(first.getBoundingClientRect().top),
+      lastBottom: Math.round(last.getBoundingClientRect().bottom),
+      footerLeft: Math.round(footer.getBoundingClientRect().left),
+      viewportHeight: window.innerHeight,
+    };
+  });
+  expect(geometry.headerBackground).not.toContain('rgba');
+  expect(geometry.stripBottom).toBe(geometry.headerTop);
+  expect(geometry.navTop).toBeGreaterThanOrEqual(geometry.headerBottom);
+  expect(geometry.navBottom).toBeLessThanOrEqual(geometry.viewportHeight);
+  expect(geometry.firstTop).toBeGreaterThanOrEqual(geometry.navTop);
+  expect(geometry.lastBottom).toBeLessThanOrEqual(geometry.navBottom);
+  expect(geometry.footerLeft).toBeGreaterThanOrEqual(224);
+
+  await page.getByRole('button', { name: /Continue filing|View record/i }).first().click();
+  await page.locator('.section-index a[href="#attachments"]').click();
+  await expect(page.locator('#attachments')).toBeInViewport();
+  const targetTop = await page.locator('#attachments').evaluate((element) => Math.round(element.getBoundingClientRect().top));
+  const headerBottom = await page.locator('.app-header').evaluate((element) => Math.round(element.getBoundingClientRect().bottom));
+  expect(targetTop).toBeGreaterThanOrEqual(headerBottom + 8);
 });
 
 test('public headers stay consistent and dark surfaces remain readable', async ({ page }, testInfo) => {
@@ -56,8 +126,7 @@ test('public headers stay consistent and dark surfaces remain readable', async (
   const homeButton = await buttonStyle();
   await page.goto('/services');
   await expect(page.locator('.registry-utilities').getByRole('button', { name: 'Reviewer Guide', exact: true })).toBeVisible();
-  await page.waitForTimeout(150);
-  expect(await buttonStyle()).toEqual(homeButton);
+  await expect.poll(buttonStyle).toEqual(homeButton);
   expect(homeButton.whiteSpace).toBe('nowrap');
 
   await page.getByRole('button', { name: /Accessibility · Dark mode/i }).click();
