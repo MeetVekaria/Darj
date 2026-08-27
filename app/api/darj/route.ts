@@ -282,8 +282,7 @@ async function login(body: JsonBody, request: Request) {
   const csrfToken = crypto.randomUUID();
   const now = new Date();
   const expires = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-  await env.DB.prepare('INSERT INTO demo_runs (run_id, created_at, expires_at) VALUES (?, ?, ?)').bind(runId, now.toISOString(), expires.toISOString()).run();
-  const seeded = await seedRun(runId);
+  const seeded = await seedRun(runId, { createdAt: now.toISOString(), expiresAt: expires.toISOString() });
   const response = securedJson(initialState(runId, seeded.savedAt, seeded.attachments, seeded.studio));
   const secure = new URL(request.url).protocol === 'https:' ? '; Secure' : '';
   response.headers.append('Set-Cookie', `${COOKIE_NAME}=${encodeURIComponent(runId)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400${secure}`);
@@ -301,16 +300,13 @@ function logout(request: Request) {
 
 async function consumeRateLimit(key: string, limit: number, windowMs: number): Promise<boolean> {
   const keyHash = await sha256Hex(new TextEncoder().encode(key));
-  const now = Date.now();
-  const row = await env.DB.prepare('SELECT window_start, request_count FROM rate_limits WHERE key_hash = ?').bind(keyHash).first();
-  const windowStart = row ? Date.parse(String(row.window_start)) : 0;
-  if (row && now - windowStart < windowMs) {
-    if (Number(row.request_count) >= limit) return false;
-    await env.DB.prepare('UPDATE rate_limits SET request_count = request_count + 1 WHERE key_hash = ?').bind(keyHash).run();
-    return true;
-  }
-  await env.DB.prepare(`INSERT INTO rate_limits (key_hash, window_start, request_count) VALUES (?, ?, 1) ON CONFLICT(key_hash) DO UPDATE SET window_start = excluded.window_start, request_count = 1`).bind(keyHash, new Date(now).toISOString()).run();
-  return true;
+  const now = new Date().toISOString();
+  const row = await env.DB.prepare(`INSERT INTO rate_limits (key_hash, window_start, request_count) VALUES (?, ?, 1)
+    ON CONFLICT(key_hash) DO UPDATE SET
+      request_count = CASE WHEN (unixepoch(excluded.window_start) - unixepoch(rate_limits.window_start)) * 1000 < ? THEN rate_limits.request_count + 1 ELSE 1 END,
+      window_start = CASE WHEN (unixepoch(excluded.window_start) - unixepoch(rate_limits.window_start)) * 1000 < ? THEN rate_limits.window_start ELSE excluded.window_start END
+    RETURNING request_count`).bind(keyHash, now, windowMs, windowMs).first();
+  return Number(row?.request_count ?? limit + 1) <= limit;
 }
 
 async function buildSeedDocuments(runId: string): Promise<SeedDocument[]> {
@@ -345,11 +341,12 @@ async function buildSeedDocuments(runId: string): Promise<SeedDocument[]> {
   }));
 }
 
-async function seedRun(runId: string) {
+async function seedRun(runId: string, run?: { createdAt: string; expiresAt: string }) {
   const savedAt = new Date().toISOString();
   const documents = await buildSeedDocuments(runId);
   const studio = emptyStudioState(savedAt);
   await env.DB.batch([
+    ...(run ? [env.DB.prepare('INSERT INTO demo_runs (run_id, created_at, expires_at) VALUES (?, ?, ?)').bind(runId, run.createdAt, run.expiresAt)] : []),
     env.DB.prepare(`INSERT INTO draft_snapshots (run_id, case_id, version, base_version, form_json, changed_paths, saved_at) VALUES (?, ?, 17, 16, ?, ?, ?)`)
       .bind(runId, CASE_ID, JSON.stringify(INITIAL_FORM), JSON.stringify([]), savedAt),
     env.DB.prepare(`INSERT INTO case_master_state (run_id, case_id, pinned_version, pinned_office, current_version, current_office, source, review_state)

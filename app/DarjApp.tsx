@@ -254,6 +254,7 @@ export default function DarjApp() {
 
   async function login(destination: Screen = 'filings') {
     setBusy('login');
+    setRestoringWorkspace(true);
     try {
       const recovery = await safeReadLocalDraft('DARJ-DEMO-AOC4-01');
       const next = await post('login', { email: 'meet@darj.demo', password: 'darj2026' }) as unknown as AppState;
@@ -298,7 +299,7 @@ export default function DarjApp() {
       } else {
         navigate(recovery && sessionExpired ? 'prepare' : destination);
       }
-    } finally { setBusy(''); }
+    } finally { setBusy(''); setRestoringWorkspace(false); }
   }
 
   async function startService(formCode: string, financialYear: string, applicantName: string, note: string) {
@@ -868,7 +869,7 @@ function LoginScreen({ theme, onTheme, hydrated, busy, onEnter, onStudio, onBrow
             <button type="submit">Search</button>
           </form>
           <div className="search-suggestions" aria-label="Suggested searches"><span>Try</span>{SEARCH_SUGGESTIONS.map((suggestion) => <button key={suggestion} onClick={() => onBrowse(suggestion)}>{suggestion}</button>)}</div>
-          <div className="quick-actions" aria-label="Popular services">{HOME_ACTIONS.map(([label, query, availability], index) => <button key={label} className={index === 0 ? 'working featured-action' : ''} onClick={availability === 'working' ? onStudio : () => onBrowse(query)}><span className="mono">{index === 0 ? 'NEW' : String(index + 1).padStart(2, '0')}</span><span className="quick-action-copy"><strong>{label}</strong>{index === 0 && <small>Source linked AOC-4 preparation</small>}</span><span aria-hidden="true">→</span></button>)}</div>
+          <div className="quick-actions" aria-label="Popular services">{HOME_ACTIONS.map(([label, query, availability], index) => <button key={label} className={index === 0 ? 'working featured-action' : ''} disabled={busy} onClick={availability === 'working' ? onStudio : () => onBrowse(query)}><span className="mono">{index === 0 ? 'NEW' : String(index + 1).padStart(2, '0')}</span><span className="quick-action-copy"><strong>{label}</strong>{index === 0 && <small>Source linked AOC-4 preparation</small>}</span><span aria-hidden="true">→</span></button>)}</div>
         </div>
         <aside className="review-access" aria-labelledby="review-access-title">
           <div className="review-access-head"><span className="status-mark durable" /><span>Synthetic environment</span></div>
