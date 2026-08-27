@@ -615,9 +615,8 @@ function secureDownload(bytes: Uint8Array, contentType: string, filename: string
 function isValidForm(value: FormDataShape): boolean { return Object.keys(INITIAL_FORM).every((key) => typeof value[key as keyof FormDataShape] === 'string'); }
 
 async function runJaanch(runId: string) {
-  const draft = await latestDraft(runId);
+  const [draft, master] = await Promise.all([latestDraft(runId), getMasterStateRow(runId)]);
   if (!draft) throw new Error('DARJ_JAANCH_FAILED|No durable draft was found.');
-  const master = await getMasterStateRow(runId);
   return securedJson({ ruleVersion: 'DARJ-RULES-1.1', masterSnapshotVersion: Number(master?.pinned_version ?? 7), master: toMasterState(master), issues: buildChecks(JSON.parse(String(draft.form_json)) as FormDataShape, master) });
 }
 
@@ -641,13 +640,15 @@ function buildChecks(form: FormDataShape, master?: DatabaseRow | null): Validati
 }
 
 async function sealPackage(runId: string) {
-  const draft = await latestDraft(runId);
+  const [draft, master, attachments, existing] = await Promise.all([
+    latestDraft(runId),
+    getMasterStateRow(runId),
+    verifyAttachments(runId),
+    latestPackage(runId),
+  ]);
   if (!draft) throw new Error('DARJ_JAANCH_FAILED|No durable draft was found.');
   const form = JSON.parse(String(draft.form_json)) as FormDataShape;
-  const master = await getMasterStateRow(runId);
   if (buildChecks(form, master).some((issue) => issue.blocking)) throw new Error('DARJ_JAANCH_FAILED|One blocking Jaanch issue still needs attention.');
-  const attachments = await verifyAttachments(runId);
-  const existing = await latestPackage(runId);
   if (existing && packageInputsMatch(existing, form, attachments)) return securedJson(toPackage(existing));
   const version = existing ? Number(existing.version) + 1 : 23;
   const packageId = `DARJ-PKG-${String(version).padStart(6, '0')}`;

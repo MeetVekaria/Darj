@@ -81,3 +81,26 @@
 - Generated and inspected additive Drizzle migration `0002_cynical_cannonball.sql`.
 - TypeScript strict check, ESLint, eight Node invariant/security tests and the production Vinext build pass.
 - Playwright desktop and 360 px matrix: 17 passed and 15 intentional cross-project skips, including real 7 MB pause/resume, master-data seal blocking, correction lineage/resubmission, sign-out cookie boundaries, desktop alignment and mobile control-width coverage.
+
+## 27 August 2026
+
+### Guided Filing Studio and reviewer path
+
+- Used Codex to extend the complete AOC-4 reliability journey with document-assisted preparation while preserving its transaction boundaries.
+- Added a first-viewport homepage entry and a featured reviewer-guide path to a prepared AOC-4 evidence package.
+- Added a deterministic plain-language filing finder, contextual document checklist, clean and conflict scenarios, source/page/section evidence, confidence behavior, professional roles and explicit accept/edit/clarification decisions.
+- Added versioned validation results, downloadable preview/evidence reports and machine-readable package records, followed by a reviewed-draft handoff into Jaanch, Mohar, test signing, mocked submission, Rasid, payment recovery and processing status.
+- Kept professional certification, legal advice, live MCA access, DSC signing, real payment and official acknowledgement outside the product boundary.
+
+### Final release corrections
+
+- Removed the public-route authentication probe, reduced login and critical-action database round trips, and kept protected-route restoration free of public-screen flashes.
+- Standardised public and internal heading scales, sticky header offsets, side navigation state, dark-mode contrast, button help text and focused blocking errors.
+- Reworked downloadable PDFs into aligned A4 records with explicit sample/not-official labels.
+
+### Final verification
+
+- TypeScript, ESLint, production build and eight invariant/security tests pass.
+- The complete Playwright desktop and 360 px suite reports 37 passed and 19 intentional cross-project skips, including clean/conflicting Studio journeys, P0/P1 recovery, accessibility, dark mode, alignment and mobile overflow.
+- Production dependency audit reports zero known vulnerabilities.
+- The public submission routes and absolute HTTPS social-preview metadata were verified on the deployed release.

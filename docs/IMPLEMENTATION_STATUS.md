@@ -4,6 +4,21 @@ Status reflects the deployed code path, not the existence of a visual control.
 
 **Release gate:** every P0 and P1 implementation and test requirement below is complete in the current source. The active production URL is maintained by the Sites project rather than hard-coded in this file.
 
+**Final submission gate, 27 August 2026:** the Guided Filing Studio and the original reliability journey are complete, public and covered by the desktop/mobile release matrix. The document-assisted layer does not replace the P0/P1 transaction architecture; it feeds a reviewed, versioned draft into it.
+
+## Guided Filing Studio
+
+| Capability | Status | Working evidence |
+|---|---|---|
+| Filing entry and service finder | Complete | AOC-4 direct entry, plain-language deterministic matching, saved package resume and a reviewer accelerator |
+| Contextual document intake | Complete | Three verified sample PDFs, contextual optional slots, hashes, classifications, extraction states and retained replacement history |
+| Source-linked extraction | Complete | Ten populated fields include document, page/section, excerpt, confidence, extraction time and rule state; no evidence means no populated field |
+| Deterministic validation | Complete | Identity, financial-year, arithmetic, AGM-period, professional-review and evidence-coverage rules with blocking/review/ready states |
+| Professional review | Complete | Company preparer, CA/CS/CMA reviewer and authorized signatory roles; accept, edit and clarification decisions; unresolved/low-confidence/edited filters |
+| Downloadable package | Complete | Labelled preview PDF, evidence PDF, attachment manifest, validation report, review history and machine-readable package JSON |
+| Reliability handoff | Complete | Reviewed evidence creates a new durable draft, then continues through Jaanch, Mohar, test signing, mocked submission, Rasid, payment and processing |
+| Honest boundary | Complete | Filing assistance only; no legal advice, professional replacement, live MCA connection, DSC, real payment or official acknowledgement claim |
+
 ## Production platform surface
 
 - Authenticated global shell with overview, service search, company, document, payment, guidance and About workspaces.
@@ -63,10 +78,12 @@ Status reflects the deployed code path, not the existence of a visual control.
 - Desktop paired fields have zero top/height delta; mobile inputs share one width with zero horizontal overflow.
 - Sign out clears both session cookies while retaining the IndexedDB draft.
 
-## Verification snapshot, 25 August 2026
+## Verification snapshot, 27 August 2026
 
 - TypeScript strict check: pass.
 - ESLint: pass.
 - Node invariant/security suite: 8 passed.
-- Playwright P0/P1 desktop and 360 px matrix: 17 passed, 15 intentional cross-project skips.
+- Playwright full desktop and 360 px matrix: 37 passed, 19 intentional cross-project skips. This includes the public entry, reviewer guide, service finder, Guided Filing Studio clean/conflict scenarios, protected-route restoration, P0/P1 recovery, dark mode, alignment, accessibility and mobile overflow checks.
 - Production Vinext build: pass.
+- Production dependency audit: 0 known vulnerabilities.
+- Deployed public routes `/login`, `/reviewer`, `/services`, `/evidence` and `/limitations`: HTTP 200 without access requests.

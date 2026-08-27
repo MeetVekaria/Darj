@@ -36,6 +36,8 @@ npm run build
 
 - Production-style company workspace with global navigation, task search, company context and clear working-versus-reference labels.
 - Calm, service-first public entry with original filing imagery, persistent light/dark mode and a five-stop reviewer guide.
+- Guided Filing Studio for AOC-4 with a task finder, contextual document checklist, prepared clean/conflict scenarios, source-linked field evidence, confidence states, deterministic validation, professional review decisions and downloadable filing/evidence artifacts.
+- Homepage and reviewer-guide entry points that open the working document-to-draft journey directly, without making a reviewer hunt through the wider service catalogue.
 - Searchable 143-entry MCA service catalogue spanning company, LLP, director, annual, charge, approval, special-entity, master-data, document, payment, grievance, investor, DSC, information and help categories.
 - Durable new-filing intake for AOC-4, MGT-7, DIR-3 KYC, DIR-12 and CHG-1; AOC-4 continues into the complete journey while the other four are explicitly labelled guided intakes.
 - Sample company profile, compliance calendar, filing passport, document vault, payment state model, fee-preview interaction, guidance centre and independent About record.
@@ -58,6 +60,7 @@ npm run build
 - Same-origin mutation checks, double-submit CSRF protection, hashed login/control rate limits, strict cookies and security response headers.
 - Responsive filing register, prepare, Jaanch, Mohar, sign, Rasid, payment, processing, evidence, limitations and recovery views.
 - Print-safe A4 Rasid and a concise persistent independence disclosure.
+- A mocked MCA adapter only after professional review, with the working-vs-mocked boundary shown in the Studio timeline, package downloads, signing step, Rasid and limitations record.
 
 ## Deliberate deployment adaptation
 
