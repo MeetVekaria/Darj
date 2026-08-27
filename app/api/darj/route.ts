@@ -301,6 +301,7 @@ function logout(request: Request) {
 async function consumeRateLimit(key: string, limit: number, windowMs: number): Promise<boolean> {
   const keyHash = await sha256Hex(new TextEncoder().encode(key));
   const now = new Date().toISOString();
+  // Keep the rate-limit decision atomic and avoid a separate read before login.
   const row = await env.DB.prepare(`INSERT INTO rate_limits (key_hash, window_start, request_count) VALUES (?, ?, 1)
     ON CONFLICT(key_hash) DO UPDATE SET
       request_count = CASE WHEN (unixepoch(excluded.window_start) - unixepoch(rate_limits.window_start)) * 1000 < ? THEN rate_limits.request_count + 1 ELSE 1 END,
