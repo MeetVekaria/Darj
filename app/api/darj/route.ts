@@ -435,20 +435,18 @@ async function startService(runId: string, body: JsonBody) {
 async function readStudioDocuments(runId: string) {
   const attachments = await getAttachments(runId);
   const seeded = await buildSeedDocuments(runId);
-  const documents: Record<string, string> = {};
-  for (const attachment of attachments) {
+  const entries = await Promise.all(attachments.map(async (attachment) => {
     const object = await env.FILES.get(attachment.objectKey);
     if (!object) {
       const seed = seeded.find((item) => item.objectKey === attachment.objectKey);
       if (seed) {
         await env.FILES.put(seed.objectKey, seed.bytes, { httpMetadata: { contentType: 'application/pdf' } });
-        documents[attachment.slot] = new TextDecoder().decode(seed.bytes);
-        continue;
+        return [attachment.slot, new TextDecoder().decode(seed.bytes)] as const;
       }
     }
-    if (object) documents[attachment.slot] = new TextDecoder().decode(await object.arrayBuffer());
-  }
-  return documents;
+    return [attachment.slot, object ? new TextDecoder().decode(await object.arrayBuffer()) : ''] as const;
+  }));
+  return Object.fromEntries(entries.filter(([, contents]) => contents)) as Record<string, string>;
 }
 
 async function getStudioState(runId: string): Promise<StudioState> {
@@ -470,8 +468,10 @@ async function openStudio(runId: string, body: JsonBody) {
   const now = new Date().toISOString();
   const studio = extractStudioState(scenario, now, await readStudioDocuments(runId));
   if (typeof body.serviceNeed === 'string') studio.serviceNeed = body.serviceNeed.trim().slice(0, 240);
-  await saveStudioState(runId, studio);
-  await appendUniqueEvent(runId, 'DOCUMENT_EXTRACTION_STARTED', 'Meet, company preparer', `Opened the ${scenario} guided AOC-4 document package.`);
+  await Promise.all([
+    saveStudioState(runId, studio),
+    appendUniqueEvent(runId, 'DOCUMENT_EXTRACTION_STARTED', 'Meet, company preparer', `Opened the ${scenario} guided AOC-4 document package.`),
+  ]);
   return securedJson({ studio });
 }
 

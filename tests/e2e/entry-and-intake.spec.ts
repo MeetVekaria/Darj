@@ -10,12 +10,14 @@ test('public entry is a registry command centre, themeable and links to the revi
   await expect(page.getByRole('button', { name: /Accessibility · Light mode/i })).toBeVisible();
   await page.getByRole('button', { name: 'Reviewer Guide' }).first().click();
   await expect(page).toHaveURL(/\/reviewer$/);
-  await expect(page.getByRole('heading', { name: 'Five recovery paths. Five minutes.' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'One guided filing and five recovery proofs' })).toBeVisible();
+  await expect(page.locator('.reviewer-feature')).toContainText('Prepare AOC-4 from documents');
   await expect(page.locator('.reviewer-links a')).toHaveCount(5);
 });
 
 test('a clean public visit does not probe the authenticated API', async ({ page }) => {
   const calls: string[] = [];
+  await page.addInitScript(() => window.localStorage.setItem('darj-session-active', 'true'));
   page.on('request', (request) => {
     if (new URL(request.url()).pathname === '/api/darj') calls.push(`${request.method()} ${request.url()}`);
   });
@@ -64,6 +66,12 @@ test('first viewport exposes context, services, data and sample access', async (
 test('public service directory can be browsed without signing in', async ({ page }) => {
   await page.goto('/services');
   await expect(page.getByRole('heading', { name: 'Find an MCA form or service' })).toBeVisible();
+  const heading = await page.locator('.directory-hero h1').evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { size: Number.parseFloat(style.fontSize), weight: style.fontWeight };
+  });
+  expect(heading.size).toBeLessThanOrEqual(36);
+  expect(heading.weight).toBe('500');
   await page.getByLabel('Search the catalogue').fill('certified copy');
   await expect(page.getByText(/matching services/i)).toBeVisible();
 });
@@ -142,8 +150,19 @@ test('Guided Filing Studio creates a source-linked reviewed draft', async ({ pag
   await page.getByRole('button', { name: 'Open prepared package' }).click();
   await expect(page.getByRole('heading', { name: 'No source evidence means no silent autofill' })).toBeVisible();
   await expect(page.locator('.field-register > button')).toHaveCount(10);
+  await page.getByRole('button', { name: 'Complete professional review' }).click();
+  const errorToast = page.locator('.error-toast');
+  await expect(errorToast).toContainText('DARJ_STUDIO_BLOCKED');
+  await expect(errorToast).toBeInViewport();
+  await expect(errorToast).toBeFocused();
+  await errorToast.getByRole('button', { name: 'Dismiss message' }).click();
+  await page.getByRole('button', { name: 'Evidence Mode on' }).click();
+  await expect(page.getByText('Evidence details are hidden')).toBeVisible();
+  await page.getByRole('button', { name: 'Evidence Mode off' }).click();
+  await expect(page.locator('.source-evidence blockquote')).toBeVisible();
   await page.getByLabel('Review role').selectOption('CA/CS/CMA reviewer');
   await page.getByRole('button', { name: 'Accept extraction' }).click();
+  await expect(page.locator('.review-decision')).toContainText('ACCEPTED');
   await page.getByRole('button', { name: 'Complete professional review' }).click();
   await expect(page.getByRole('button', { name: /Create reviewed draft/i })).toBeEnabled();
   const preview = await page.evaluate(async () => {
@@ -155,6 +174,19 @@ test('Guided Filing Studio creates a source-linked reviewed draft', async ({ pag
   await page.getByRole('button', { name: /Create reviewed draft/i }).click();
   await expect(page.getByRole('heading', { name: 'Prepare AOC-4' })).toBeVisible();
   await expect(page.getByLabel('Board meetings')).toHaveValue('4');
+});
+
+test('plain language filing finder returns a visible match and meaningful destination', async ({ page }) => {
+  await page.goto('/login');
+  await page.getByRole('button', { name: /Open sample company workspace/i }).click();
+  await page.getByRole('button', { name: /Guided filing/i }).click();
+  await page.getByLabel('Plain language filing need').fill('I need to complete my annual return');
+  await page.getByRole('button', { name: 'Find the filing' }).click();
+  const result = page.locator('.service-finder-result');
+  await expect(result).toContainText('MGT-7 · Annual return');
+  await result.getByRole('button', { name: 'Open in service catalogue' }).click();
+  await expect(page).toHaveURL(/\/services$/);
+  await expect(page.getByLabel('Search the catalogue')).toHaveValue('MGT-7');
 });
 
 test('Guided Filing Studio blocks and explicitly resolves conflicting evidence', async ({ page }) => {

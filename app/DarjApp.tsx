@@ -65,11 +65,6 @@ const API = '/api/darj';
 const SESSION_HINT = 'darj-session-active';
 const PREPARE_SECTION_IDS = ['company', 'financials', 'governance', 'attachments'] as const;
 
-function hasSessionHint() {
-  try { return window.localStorage.getItem(SESSION_HINT) === 'true'; }
-  catch { return false; }
-}
-
 function setSessionHint(active: boolean) {
   try {
     if (active) window.localStorage.setItem(SESSION_HINT, 'true');
@@ -164,16 +159,17 @@ export default function DarjApp() {
     void (async () => {
       const initialScreen = screenFromPath(window.location.pathname);
       const publicScreen = initialScreen === 'reviewer' || initialScreen === 'evidence' || initialScreen === 'limitations' || initialScreen === 'services' || initialScreen === 'login';
-      if (!publicScreen || (initialScreen === 'login' && hasSessionHint())) setRestoringWorkspace(true);
+      if (!publicScreen) setRestoringWorkspace(true);
       const ready = await localStorageAvailable();
       setStorageReady(ready);
       const local = ready ? await safeReadLocalDraft('DARJ-DEMO-AOC4-01') : null;
       setHasLocalRecovery(Boolean(local));
-      if (initialScreen === 'reviewer' || initialScreen === 'evidence' || initialScreen === 'limitations' || initialScreen === 'services') return;
-      if (initialScreen === 'login' && !hasSessionHint()) return;
+      // Public pages never restore a private workspace or call the session API.
+      // A stale browser hint must not delay the homepage or cause a failed GET.
+      if (publicScreen) return;
       try {
         const restored = await refresh();
-        if (restored) setScreen(screenFromPath(window.location.pathname) === 'login' ? 'filings' : screenFromPath(window.location.pathname));
+        if (restored) setScreen(screenFromPath(window.location.pathname));
       } finally {
         setRestoringWorkspace(false);
       }
@@ -197,6 +193,11 @@ export default function DarjApp() {
     window.addEventListener('offline', update);
     return () => { window.removeEventListener('online', update); window.removeEventListener('offline', update); };
   }, []);
+
+  useEffect(() => {
+    if (!error) return;
+    requestAnimationFrame(() => document.getElementById('darj-error')?.focus());
+  }, [error]);
 
   useEffect(() => {
     if (!online || !state?.draft || !form || !saveState.includes('Offline')) return;
@@ -285,6 +286,10 @@ export default function DarjApp() {
       setSessionExpired(false);
       const reviewer = readReviewerScenario();
       if (reviewer) {
+        if (reviewer === 'documents') {
+          const prepared = await post('openStudio', { scenario: 'clean', serviceNeed: 'File annual financial statements from company documents' }) as { studio: StudioState };
+          setState({ ...next, studio: prepared.studio });
+        }
         const destination = reviewerDestination(reviewer);
         setScreen(destination);
         setNotice(reviewerNotice(reviewer));
@@ -321,6 +326,10 @@ export default function DarjApp() {
     try {
       const result = await post('updateStudio', { operation, ...data }) as { studio: StudioState };
       setState((current) => current ? { ...current, studio: result.studio } : current);
+      if (operation === 'review') setNotice('Professional review decision saved to this evidence field.');
+      if (operation === 'completeReview') setNotice('Professional review completed. The evidence set is ready to become a durable draft.');
+    } catch {
+      // post() has already surfaced the structured error in the focused message.
     } finally { setBusy(''); }
   }
 
@@ -744,10 +753,10 @@ export default function DarjApp() {
         <PlatformNav screen={screen} onNavigate={navigate} />
         <main id="main-content" className="app-main">
           {notice && <div className="notice" role="status" aria-live="polite"><span className="status-mark progress" />{notice}</div>}
-          {error && <ErrorPanel error={error} />}
+          {error && <ErrorPanel error={error} toast onDismiss={() => setError(null)} />}
 
           {screen === 'filings' && <FilingsScreen state={state} onPrepare={() => navigate(resumeScreen(state))} onStudio={() => navigate('studio')} onRecovery={() => navigate('recovery')} onNavigate={navigate} />}
-          {screen === 'studio' && <GuidedFilingStudio state={state} busy={busy} onOpen={(scenario, need) => void openStudio(scenario, need)} onUpdate={(operation, data) => void updateStudio(operation, data)} onApply={() => void applyStudioDraft()} onPrepare={() => navigate('prepare')} />}
+          {screen === 'studio' && <GuidedFilingStudio state={state} busy={busy} onOpen={(scenario, need) => void openStudio(scenario, need)} onUpdate={(operation, data) => void updateStudio(operation, data)} onApply={() => void applyStudioDraft()} onPrepare={() => navigate('prepare')} onBrowse={(query) => { setServiceQuery(query); navigate('services'); }} />}
           {screen === 'newFiling' && <NewFilingScreen busy={busy === 'start-service'} onStart={(formCode, financialYear, applicantName, note) => void startService(formCode, financialYear, applicantName, note)} />}
           {screen === 'services' && <ServiceDirectoryScreen query={serviceQuery} category={serviceCategory} selectedKey={selectedServiceKey} onQuery={setServiceQuery} onCategory={setServiceCategory} onSelect={setSelectedServiceKey} onOpenWorking={() => navigate('studio')} onStart={() => navigate('newFiling')} />}
           {screen === 'company' && <CompanyScreen state={state} onPrepare={() => navigate(resumeScreen(state))} onDocuments={() => navigate('documents')} />}
@@ -845,7 +854,7 @@ function LoginScreen({ theme, onTheme, hydrated, busy, onEnter, onStudio, onBrow
           <button className="utility-signin" onClick={onEnter} disabled={!hydrated || busy}>Sign In</button>
         </nav>
       </header>
-      <section className="operational-notice" aria-label="Environment status"><span className="status-mark durable" /><strong>Demo environment operational</strong><span>Explore the sample company or prepare a synthetic AOC-4 filing.</span></section>
+      <section className="operational-notice" aria-label="Environment status"><span className="status-mark durable" /><strong>Document guided AOC-4 journey ready</strong><span>Open the prepared sample to inspect extraction evidence, review decisions and retry safe submission.</span></section>
       {languageNote && <div className="registry-language-note" role="status">This review build uses English interface copy with Hindi identity labelling. Full Hindi localisation is outside the current scope.</div>}
 
       <section className="command-centre" aria-labelledby="login-title">
@@ -859,7 +868,7 @@ function LoginScreen({ theme, onTheme, hydrated, busy, onEnter, onStudio, onBrow
             <button type="submit">Search</button>
           </form>
           <div className="search-suggestions" aria-label="Suggested searches"><span>Try</span>{SEARCH_SUGGESTIONS.map((suggestion) => <button key={suggestion} onClick={() => onBrowse(suggestion)}>{suggestion}</button>)}</div>
-          <div className="quick-actions" aria-label="Popular services">{HOME_ACTIONS.map(([label, query, availability], index) => <button key={label} className={index === 0 ? 'working' : ''} onClick={availability === 'working' ? onStudio : () => onBrowse(query)}><span className="mono">{String(index + 1).padStart(2, '0')}</span><strong>{label}</strong><span aria-hidden="true">→</span></button>)}</div>
+          <div className="quick-actions" aria-label="Popular services">{HOME_ACTIONS.map(([label, query, availability], index) => <button key={label} className={index === 0 ? 'working featured-action' : ''} onClick={availability === 'working' ? onStudio : () => onBrowse(query)}><span className="mono">{index === 0 ? 'NEW' : String(index + 1).padStart(2, '0')}</span><span className="quick-action-copy"><strong>{label}</strong>{index === 0 && <small>Source linked AOC-4 preparation</small>}</span><span aria-hidden="true">→</span></button>)}</div>
         </div>
         <aside className="review-access" aria-labelledby="review-access-title">
           <div className="review-access-head"><span className="status-mark durable" /><span>Synthetic environment</span></div>
@@ -1012,7 +1021,7 @@ function ReviewerScreen({ theme, onTheme, onNavigate }: { theme: Theme; onTheme:
     ['Watch a paused processor hold custody', '/recovery?review=paused', 'No resubmission needed'],
     ['Correct a filing without rebuilding it', `/filings/${caseId}/lineage?review=lineage`, 'Linked package lineage'],
   ];
-  return <main className="reviewer-shell"><div className="india-rule" aria-hidden="true"><span /><span /><span /></div><button className="registry-disclaimer" onClick={() => onNavigate('limitations')}>Synthetic data · Independent prototype · Not affiliated with the Ministry of Corporate Affairs</button><header className="registry-identity-header reviewer-header"><button className="registry-brand-button" onClick={() => onNavigate('login')} aria-label="MCA21 Corporate Services home"><RegistryBrand /></button><nav className="registry-utilities" aria-label="Reviewer guide navigation"><button onClick={() => onNavigate('login')}>Home</button><button onClick={() => onNavigate('evidence')}>Evidence</button><ThemeToggle theme={theme} onTheme={onTheme} /><button className="utility-signin" onClick={() => onNavigate('login')}>Sign In</button></nav></header><section className="reviewer-page" aria-labelledby="reviewer-title"><div className="reviewer-intro"><p className="eyebrow">REVIEWER GUIDE</p><h1 id="reviewer-title">Five recovery paths. Five minutes.</h1><p>Each link opens the exact place worth reviewing. DARJ signs you into an isolated sample workspace automatically.</p></div><div className="reviewer-links">{paths.map(([title, path, proof], index) => <a href={path} key={path}><span className="mono">{String(index + 1).padStart(2, '0')}</span><strong>{title}</strong><small>{proof}</small><span aria-hidden="true">→</span></a>)}</div><div className="reviewer-boundary"><strong>Independent review environment</strong><p>Sample data only. DARJ does not connect to MCA21, make a statutory filing or collect sensitive identifiers.</p></div></section><footer className="registry-footer"><div><Wordmark compact /><p>Five direct paths to the platform reliability evidence.</p></div><nav aria-label="Reviewer footer"><button onClick={() => onNavigate('login')}>Home</button><button onClick={() => onNavigate('evidence')}>Evidence</button><button onClick={() => onNavigate('limitations')}>Limitations</button></nav><p>DARJ does not connect to MCA21 or make statutory filings.</p></footer></main>;
+  return <main className="reviewer-shell"><div className="india-rule" aria-hidden="true"><span /><span /><span /></div><button className="registry-disclaimer" onClick={() => onNavigate('limitations')}>Synthetic data · Independent prototype · Not affiliated with the Ministry of Corporate Affairs</button><header className="registry-identity-header reviewer-header"><button className="registry-brand-button" onClick={() => onNavigate('login')} aria-label="MCA21 Corporate Services home"><RegistryBrand /></button><nav className="registry-utilities" aria-label="Reviewer guide navigation"><button onClick={() => onNavigate('login')}>Home</button><button onClick={() => onNavigate('evidence')}>Evidence</button><ThemeToggle theme={theme} onTheme={onTheme} /><button className="utility-signin" onClick={() => onNavigate('login')}>Sign In</button></nav></header><section className="reviewer-page" aria-labelledby="reviewer-title"><div className="reviewer-intro"><p className="eyebrow">REVIEWER GUIDE</p><h1 id="reviewer-title">One guided filing and five recovery proofs</h1><p>Start with the document journey, then use the direct links to inspect each reliability state. DARJ opens an isolated sample workspace for every path.</p></div><a className="reviewer-feature" href={`/filings/${caseId}/studio?review=documents`}><span className="mono">START HERE · WORKING JOURNEY</span><span><strong>Prepare AOC-4 from documents</strong><small>Inspect source linked extraction, record a professional review and create a durable draft.</small></span><span aria-hidden="true">→</span></a><div className="reviewer-links" aria-label="Reliability review paths">{paths.map(([title, path, proof], index) => <a href={path} key={path}><span className="mono">{String(index + 1).padStart(2, '0')}</span><strong>{title}</strong><small>{proof}</small><span aria-hidden="true">→</span></a>)}</div><div className="reviewer-boundary"><strong>Independent review environment</strong><p>Sample data only. DARJ does not connect to MCA21, make a statutory filing or collect sensitive identifiers.</p></div></section><footer className="registry-footer"><div><Wordmark compact /><p>A guided document journey and five direct reliability paths.</p></div><nav aria-label="Reviewer footer"><button onClick={() => onNavigate('login')}>Home</button><button onClick={() => onNavigate('evidence')}>Evidence</button><button onClick={() => onNavigate('limitations')}>Limitations</button></nav><p>DARJ does not connect to MCA21 or make statutory filings.</p></footer></main>;
 }
 
 function CompanyScreen({ state, onPrepare, onDocuments }: { state: AppState; onPrepare: () => void; onDocuments: () => void }) {
@@ -1043,13 +1052,28 @@ function AboutScreen({ onNavigate }: { onNavigate: (screen: Screen) => void }) {
   return <section className="page-section about-page" aria-labelledby="about-title"><div className="about-mast"><div><p className="eyebrow">About DARJ / दर्ज</p><h1 id="about-title">A reliable filing layer, designed independently.</h1></div><p>DARJ asks one product question: what if a statutory filing behaved like a reliable transaction instead of a fragile browser session?</p></div><div className="about-principles"><article><span>01</span><h2>Save before sync</h2><p>Draft recovery begins locally, then reconciles explicit versions with the server.</p></article><article><span>02</span><h2>Seal an exact package</h2><p>Fields and verified files become one immutable, canonical package hash.</p></article><article><span>03</span><h2>Make retries harmless</h2><p>Idempotency and atomic custody prevent duplicate receipts after lost responses.</p></article><article><span>04</span><h2>Name every state</h2><p>Received, paid, processing and accepted never blur into one vague “submitted” label.</p></article></div><div className="about-split"><section><p className="eyebrow">What this platform covers</p><h2>A complete service map around one complete journey.</h2><p>The platform shell maps company, LLP, director, charge, annual, approval, foreign-company, Nidhi, master-data, document, payment, grievance, investor, DSC, information and help categories. That breadth improves discovery; it does not create fake functionality.</p><button className="primary" onClick={() => onNavigate('services')}>Explore the service map <span aria-hidden="true">→</span></button></section><section className="independence-card"><span className="mono">INDEPENDENCE RECORD / 01</span><h2>Not an MCA service.</h2><ul><li>No live MCA integration or private API access</li><li>No government logo, endorsement or partnership claim</li><li>No real company, DIN, PAN, Aadhaar, OTP or payment data</li><li>No legal-compliance determination</li><li>Working and mocked boundaries shown in product</li></ul><button className="secondary" onClick={() => onNavigate('limitations')}>Read all limitations</button></section></div><div className="mca-context"><div><p className="eyebrow">MCA context</p><h2>Designed for the public-service landscape, not presented as the Ministry.</h2></div><p>The official MCA surface spans policy information, Acts and rules, offices and affiliated bodies, registry master data, company and LLP filings, directors and DSC, payments, documents, grievances, IEPF, data and help. DARJ reorganises those categories for discovery while preserving its independent identity.</p></div></section>;
 }
 
-function GuidedFilingStudio({ state, busy, onOpen, onUpdate, onApply, onPrepare }: {
+type StudioServiceMatch = { code: string; title: string; detail: string; availability: 'working' | 'catalogue'; query: string };
+
+function matchStudioService(value: string): StudioServiceMatch {
+  const query = value.trim();
+  const need = query.toLowerCase();
+  if (/aoc|financial statement|annual account|balance sheet/u.test(need)) return { code: 'AOC-4', title: 'Filing of financial statements', detail: 'The complete document guided journey is available in this build.', availability: 'working', query: 'AOC-4' };
+  if (/mgt|annual return/u.test(need)) return { code: 'MGT-7', title: 'Annual return', detail: 'A durable guided intake is available. Full document automation is limited to AOC-4.', availability: 'catalogue', query: 'MGT-7' };
+  if (/director|din|kyc/u.test(need)) return { code: 'DIR-3 KYC', title: 'Director KYC', detail: 'A durable guided intake is available in the filing catalogue.', availability: 'catalogue', query: 'DIR-3 KYC' };
+  if (/charge|lender|security interest/u.test(need)) return { code: 'CHG-1', title: 'Create or modify a charge', detail: 'The service catalogue contains the guided intake and related charge services.', availability: 'catalogue', query: 'CHG-1' };
+  if (/incorporat|register.*company|new company|name reserv/u.test(need)) return { code: 'SPICe+', title: 'Company incorporation and name reservation', detail: 'The catalogue maps the relevant registration services and capability boundaries.', availability: 'catalogue', query: 'company incorporation' };
+  if (/llp/u.test(need)) return { code: 'FiLLiP', title: 'LLP incorporation and services', detail: 'The catalogue maps LLP registration and related services.', availability: 'catalogue', query: 'LLP incorporation' };
+  return { code: 'CATALOGUE', title: 'Search the complete MCA service map', detail: 'No exact working journey matched this description. The service catalogue will keep your words as the search.', availability: 'catalogue', query };
+}
+
+function GuidedFilingStudio({ state, busy, onOpen, onUpdate, onApply, onPrepare, onBrowse }: {
   state: AppState;
   busy: string;
   onOpen: (scenario: StudioScenario, serviceNeed?: string) => void;
   onUpdate: (operation: string, data?: Record<string, unknown>) => void;
   onApply: () => void;
   onPrepare: () => void;
+  onBrowse: (query: string) => void;
 }) {
   const studio = state.studio;
   const [scenario, setScenario] = useState<StudioScenario>('clean');
@@ -1059,6 +1083,7 @@ function GuidedFilingStudio({ state, busy, onOpen, onUpdate, onApply, onPrepare 
   const [editValue, setEditValue] = useState('');
   const [comment, setComment] = useState('');
   const [evidenceMode, setEvidenceMode] = useState(true);
+  const [finderSubmitted, setFinderSubmitted] = useState('');
   const evidence = studio.evidence;
   const visibleEvidence = evidence.filter((field) => filter === 'all' || (filter === 'unresolved' && (!field.value || field.confidence === 'CONFLICTING')) || (filter === 'low' && ['LOW', 'MEDIUM', 'CONFLICTING'].includes(field.confidence)) || (filter === 'edited' && field.edited));
   const selected = evidence.find((field) => field.id === selectedField) ?? visibleEvidence[0] ?? evidence[0];
@@ -1070,6 +1095,7 @@ function GuidedFilingStudio({ state, busy, onOpen, onUpdate, onApply, onPrepare 
     ...state.events.filter((event) => ['SEALED', 'SIGNED', 'RECEIVED', 'PAID', 'ACCEPTED'].includes(event.eventType)).map((event) => ({ id: `case-${event.seq}`, label: event.eventType.replaceAll('_', ' '), detail: event.detail, actor: event.actor, occurredAt: event.occurredAt, packageVersion: state.package ? `Package v${state.package.version}` : `Draft v${state.draft?.version ?? 17}` })),
   ];
   const hasExtraction = evidence.length > 0;
+  const finderMatch = finderSubmitted && finderSubmitted === serviceNeed.trim() ? matchStudioService(finderSubmitted) : null;
 
   return <section className={`page-section studio-page ${evidenceMode ? 'evidence-mode' : ''}`} aria-labelledby="studio-title">
     <div className="studio-heading"><div><p className="eyebrow">DARJ Guided Filing Studio</p><h1 id="studio-title">Documents to a reviewed AOC-4 package</h1><p>Upload once, verify every extracted value, record professional decisions, then continue through DARJ’s retry-safe filing journey.</p></div><div className="studio-boundary"><span className="status-mark attention" /><div><strong>Filing assistance, not legal advice</strong><p>Actual MCA submission, DSC signing and professional certification remain outside this independent prototype.</p></div></div></div>
@@ -1081,23 +1107,23 @@ function GuidedFilingStudio({ state, busy, onOpen, onUpdate, onApply, onPrepare 
     <section className="studio-entry" aria-labelledby="studio-entry-title"><div className="studio-section-head"><div><p className="eyebrow">Filing entry</p><h2 id="studio-entry-title">Start with the task or the documents you already have</h2></div>{hasExtraction && <Status label={`${studio.scenario.toUpperCase()} PACKAGE · ${studio.stage}`} tone={blocking ? 'attention' : studio.stage === 'READY' ? 'durable' : 'progress'} />}</div>
       <div className="entry-options">
         <article className="selected"><span className="mono">AOC-4</span><h3>File financial statements</h3><p>The complete automated journey in this build.</p><button className="primary" disabled={studioBusy} onClick={() => onOpen(scenario)}>Prepare AOC-4 <span aria-hidden="true">→</span></button></article>
-        <article><span className="mono">SERVICE FINDER</span><h3>Describe what you need</h3><label htmlFor="service-need">Plain-language filing need</label><textarea id="service-need" value={serviceNeed} onChange={(event) => setServiceNeed(event.target.value)} /><button className="secondary" disabled={studioBusy || serviceNeed.trim().length < 8} onClick={() => onOpen('clean', serviceNeed)}>Find the filing</button></article>
+        <article><span className="mono">SERVICE FINDER</span><h3>Describe what you need</h3><label htmlFor="service-need">Plain language filing need</label><textarea id="service-need" value={serviceNeed} onChange={(event) => setServiceNeed(event.target.value)} aria-describedby="service-finder-help" /><small id="service-finder-help" className="control-help">Use a task such as file annual accounts, complete director KYC or register an LLP.</small><button className="secondary" disabled={studioBusy || serviceNeed.trim().length < 8} onClick={() => { const value = serviceNeed.trim(); setFinderSubmitted(value); onUpdate('setNeed', { value }); }}>{busy === 'studio-setNeed' ? 'Matching service…' : 'Find the filing'}</button>{finderMatch && <div className="service-finder-result" role="status" aria-live="polite"><span className="mono">MATCHED SERVICE</span><strong>{finderMatch.code} · {finderMatch.title}</strong><p>{finderMatch.detail}</p>{finderMatch.availability === 'working' ? <button className="primary small" disabled={studioBusy} onClick={() => onOpen('clean', finderSubmitted)}>Prepare matched AOC-4</button> : <button className="secondary small" onClick={() => onBrowse(finderMatch.query)}>Open in service catalogue</button>}</div>}</article>
         <article><span className="mono">RESUME</span><h3>Continue a saved package</h3><p>{hasExtraction ? `Last saved ${formatTime(studio.updatedAt)} at ${studio.stage.toLowerCase().replaceAll('_', ' ')}.` : 'No document package has been prepared in this review run yet.'}</p><button className="secondary" disabled={!hasExtraction} onClick={() => document.getElementById('studio-evidence')?.scrollIntoView({ behavior: 'smooth' })}>Resume package</button></article>
       </div>
       <div className="scenario-switch" aria-label="Prepared review scenarios"><div><strong>Demo accelerator</strong><p>Open a prepared package without waiting for uploads or extraction.</p></div><label><input type="radio" name="studio-scenario" checked={scenario === 'clean'} onChange={() => setScenario('clean')} /> Clean documents</label><label><input type="radio" name="studio-scenario" checked={scenario === 'conflict'} onChange={() => setScenario('conflict')} /> Conflicting AGM date</label><button className="secondary" disabled={studioBusy} onClick={() => onOpen(scenario)}>Open prepared package</button></div>
     </section>
 
     {hasExtraction && <>
-      <section className="studio-guide" aria-labelledby="studio-guide-title"><div><p className="eyebrow">Filing Guide</p><h2 id="studio-guide-title">Questions only where the documents leave doubt</h2><p>The guide determined <strong>{studio.variant}</strong>. Answers are saved to this filing run and can be changed.</p></div>{studio.evidence.find((field) => field.id === 'agmDate')?.confidence === 'CONFLICTING' ? <div className="guide-question"><strong>I found different AGM dates in the Board’s Report and authorization record. Which record should be used?</strong><p>The selected date will still require professional confirmation before sealing.</p><div><button className="secondary" onClick={() => onUpdate('answer', { key: 'agmResolution', value: 'board' })}>Use Board’s Report · 29 Jul</button><button className="secondary" onClick={() => onUpdate('answer', { key: 'agmResolution', value: 'authorization' })}>Use authorization record · 31 Jul</button></div></div> : <div className="guide-clear"><span className="status-mark durable" /><div><strong>No unanswered filing questions</strong><p>The supplied records contain the fields required by this limited AOC-4 schema.</p></div></div>}</section>
+      <section className="studio-guide" aria-labelledby="studio-guide-title"><div><p className="eyebrow">Filing Guide</p><h2 id="studio-guide-title">Questions only where the documents leave doubt</h2><p>The guide determined <strong>{studio.variant}</strong>. Answers are saved to this filing run and can be changed.</p></div>{studio.evidence.find((field) => field.id === 'agmDate')?.confidence === 'CONFLICTING' ? <div className="guide-question"><strong>I found different AGM dates in the Board’s Report and authorization record. Which record should be used?</strong><p>The selected date will still require professional confirmation before sealing.</p><div><button className="secondary" disabled={studioBusy} onClick={() => onUpdate('answer', { key: 'agmResolution', value: 'board' })}>Use Board’s Report · 29 Jul</button><button className="secondary" disabled={studioBusy} onClick={() => onUpdate('answer', { key: 'agmResolution', value: 'authorization' })}>Use authorization record · 31 Jul</button></div></div> : <div className="guide-clear"><span className="status-mark durable" /><div><strong>No unanswered filing questions</strong><p>The supplied records contain the fields required by this limited AOC-4 schema.</p></div></div>}</section>
 
       <section className="studio-documents" aria-labelledby="studio-documents-title"><div className="studio-section-head"><div><p className="eyebrow">Resumable document intake</p><h2 id="studio-documents-title">Files remain traceable when they are replaced</h2></div><button className="secondary" onClick={onPrepare}>Manage uploads</button></div><div className="document-register">{STUDIO_DOCUMENTS.map((document, index) => { const attachment = state.attachments.find((item) => item.slot === document.slot); const upload = state.uploadSessions.find((item) => item.slot === document.slot && item.state === 'UPLOADING'); const retainedVersions = state.attachmentVersions.filter((item) => item.slot === document.slot).length; return <article key={document.slot}><span className="mono">{String(index + 1).padStart(2, '0')}</span><div><strong>{document.label}</strong><small>{document.classification} · {document.required ? 'Required for this case' : 'When applicable'}</small></div><div><Status label={attachment ? 'EXTRACTED' : document.required ? 'MISSING' : 'NOT REQUIRED'} tone={attachment ? 'durable' : document.required ? 'attention' : 'progress'} /><small>{attachment ? `${attachment.filename} · ${formatBytes(attachment.bytes)}` : 'Checklist adapts to the filing variant'}</small></div><div><code>{attachment ? shortHash(attachment.sha256) : 'No fingerprint'}</code><small>{attachment ? `Virus scan passed · version ${attachment.version} · ${retainedVersions} retained` : upload ? `Recovery offset ${formatBytes(upload.confirmedOffset)}` : 'No file stored'}</small></div></article>; })}</div><p className="attachment-help">The three supplied PDFs are byte-counted, MIME checked and SHA-256 verified. Replacements use the existing TUS and R2 recovery path and retain every prior fingerprint. This checklist is contextual, not a universal statement of AOC-4 requirements.</p></section>
 
-      <section id="studio-evidence" className="studio-evidence" aria-labelledby="studio-evidence-title"><div className="studio-section-head"><div><p className="eyebrow">Evidence-backed extraction</p><h2 id="studio-evidence-title">No source evidence means no silent autofill</h2></div><button className={`secondary evidence-toggle ${evidenceMode ? 'active' : ''}`} aria-pressed={evidenceMode} onClick={() => setEvidenceMode((current) => !current)}>Evidence Mode {evidenceMode ? 'on' : 'off'}</button></div>
-        <div className="evidence-toolbar"><label>Review role<select value={studio.activeRole} onChange={(event) => onUpdate('setRole', { role: event.target.value as StudioRole })}><option>Company preparer</option><option>CA/CS/CMA reviewer</option><option>Authorized signatory</option></select></label><div role="group" aria-label="Evidence filters">{(['all', 'unresolved', 'low', 'edited'] as const).map((item) => <button key={item} className={filter === item ? 'active' : ''} onClick={() => setFilter(item)}>{item === 'low' ? 'Low confidence' : item[0].toUpperCase() + item.slice(1)}</button>)}</div><span><strong>{blocking}</strong> blocking · <strong>{review}</strong> review</span></div>
-        <div className="evidence-workspace"><div className="field-register">{visibleEvidence.map((field) => <button key={field.id} className={selected?.id === field.id ? 'selected' : ''} onClick={() => { setSelectedField(field.id); setEditValue(field.value); setComment(field.reviewerComment); }}><span><strong>{field.label}</strong><small>{field.value || 'Unresolved'}</small></span><Status label={field.confidence} tone={field.confidence === 'CONFLICTING' || field.confidence === 'LOW' ? 'attention' : field.confidence === 'MEDIUM' ? 'progress' : 'durable'} /></button>)}</div>{selected && <article className="source-evidence"><div className="source-head"><div><p className="eyebrow">Supporting evidence</p><h3>{selected.sourceDocument}</h3></div><Status label={selected.ruleStatus} tone={selected.ruleStatus === 'BLOCKED' ? 'attention' : selected.ruleStatus === 'REVIEW' ? 'progress' : 'durable'} /></div><dl><div><dt>Page</dt><dd>{selected.page ?? 'Not found'}</dd></div><div><dt>Section</dt><dd>{selected.section}</dd></div><div><dt>Extracted</dt><dd>{formatTime(selected.extractedAt)}</dd></div><div><dt>Previous</dt><dd>{selected.previousValue || 'No prior value'}</dd></div></dl><blockquote>{selected.evidence}</blockquote><label>Edit value<input value={editValue} onChange={(event) => setEditValue(event.target.value)} placeholder={selected.value || 'Enter a resolved value'} /></label><label>Reviewer comment<textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Explain the decision or clarification needed" /></label><div className="review-actions"><button className="primary" disabled={!selected.value || studioBusy} onClick={() => onUpdate('review', { fieldId: selected.id, decision: 'accept', comment })}>Accept extraction</button><button className="secondary" disabled={!editValue.trim() || studioBusy} onClick={() => onUpdate('review', { fieldId: selected.id, decision: 'edit', value: editValue, comment })}>Save edited value</button><button className="secondary" disabled={studioBusy} onClick={() => onUpdate('review', { fieldId: selected.id, decision: 'clarify', comment: comment || 'Clarification requested from the company preparer.' })}>Request clarification</button></div></article>}</div>
+      <section id="studio-evidence" className="studio-evidence" aria-labelledby="studio-evidence-title"><div className="studio-section-head"><div><p className="eyebrow">Evidence-backed extraction</p><h2 id="studio-evidence-title">No source evidence means no silent autofill</h2></div><div className="evidence-mode-control"><button className={`secondary evidence-toggle ${evidenceMode ? 'active' : ''}`} aria-pressed={evidenceMode} aria-describedby="evidence-mode-help" onClick={() => setEvidenceMode((current) => !current)}>Evidence Mode {evidenceMode ? 'on' : 'off'}</button><small id="evidence-mode-help">Shows the source, page, excerpt, confidence and rule result behind each value.</small></div></div>
+        <div className="evidence-toolbar"><label>Review role<select value={studio.activeRole} disabled={studioBusy} onChange={(event) => onUpdate('setRole', { role: event.target.value as StudioRole })}><option>Company preparer</option><option>CA/CS/CMA reviewer</option><option>Authorized signatory</option></select></label><div role="group" aria-label="Evidence filters">{(['all', 'unresolved', 'low', 'edited'] as const).map((item) => <button key={item} className={filter === item ? 'active' : ''} onClick={() => setFilter(item)}>{item === 'low' ? 'Low confidence' : item[0].toUpperCase() + item.slice(1)}</button>)}</div><span><strong>{blocking}</strong> blocking · <strong>{review}</strong> review</span></div>
+        <div className="evidence-workspace"><div className="field-register">{visibleEvidence.map((field) => <button key={field.id} className={selected?.id === field.id ? 'selected' : ''} onClick={() => { setSelectedField(field.id); setEditValue(field.value); setComment(field.reviewerComment); }}><span><strong>{field.label}</strong><small>{field.value || 'Unresolved'}</small></span><Status label={field.confidence} tone={field.confidence === 'CONFLICTING' || field.confidence === 'LOW' ? 'attention' : field.confidence === 'MEDIUM' ? 'progress' : 'durable'} /></button>)}</div>{selected && <article className="source-evidence"><div className="source-head"><div><p className="eyebrow">Supporting evidence</p><h3>{selected.sourceDocument}</h3></div><Status label={selected.ruleStatus} tone={selected.ruleStatus === 'BLOCKED' ? 'attention' : selected.ruleStatus === 'REVIEW' ? 'progress' : 'durable'} /></div>{evidenceMode ? <><dl><div><dt>Page</dt><dd>{selected.page ?? 'Not found'}</dd></div><div><dt>Section</dt><dd>{selected.section}</dd></div><div><dt>Extracted</dt><dd>{formatTime(selected.extractedAt)}</dd></div><div><dt>Previous</dt><dd>{selected.previousValue || 'No prior value'}</dd></div></dl><blockquote>{selected.evidence}</blockquote></> : <div className="evidence-hidden-note" role="status"><strong>Evidence details are hidden</strong><p>Turn on Evidence Mode to inspect the source page, excerpt and previous value.</p></div>}{selected.decision !== 'PENDING' && <div className="review-decision" role="status"><Status label={selected.decision} tone={selected.decision === 'CLARIFICATION' ? 'attention' : 'durable'} /><span>This decision is stored with the field and reviewer role.</span></div>}<label>Edit value<input value={editValue} onChange={(event) => setEditValue(event.target.value)} placeholder={selected.value || 'Enter a resolved value'} /></label><label>Reviewer comment<textarea value={comment} onChange={(event) => setComment(event.target.value)} placeholder="Explain the decision or clarification needed" /></label><p className="review-action-help">Accept records the extracted value. Edit records your replacement. Clarification keeps the field open.</p><div className="review-actions"><button className="primary" title="Record the current extracted value as reviewed" disabled={!selected.value || studioBusy} onClick={() => onUpdate('review', { fieldId: selected.id, decision: 'accept', comment })}>Accept extraction</button><button className="secondary" title="Replace the value and preserve the original in history" disabled={!editValue.trim() || studioBusy} onClick={() => onUpdate('review', { fieldId: selected.id, decision: 'edit', value: editValue, comment })}>Save edited value</button><button className="secondary" title="Keep this field open and ask the preparer for more information" disabled={studioBusy} onClick={() => onUpdate('review', { fieldId: selected.id, decision: 'clarify', comment: comment || 'Clarification requested from the company preparer.' })}>Request clarification</button></div></article>}</div>
       </section>
 
-      <section className="studio-validation" aria-labelledby="studio-validation-title"><div className="studio-section-head"><div><p className="eyebrow">Deterministic validation</p><h2 id="studio-validation-title">Rules decide readiness, not the extraction model</h2></div><Status label={blocking ? `${blocking} BLOCKING` : review ? `${review} REVIEW` : 'READY TO SEAL'} tone={blocking ? 'attention' : review ? 'progress' : 'durable'} /></div><div className="validation-register">{studio.validations.map((check) => <article key={check.id}><Status label={check.state} tone={check.state === 'BLOCKING' ? 'attention' : check.state === 'REVIEW' ? 'progress' : 'durable'} /><div><strong>{check.label}</strong><p>{check.detail}</p><code>{check.ruleVersion}</code></div></article>)}</div><div className="action-bar"><div><strong>{studio.stage === 'READY' ? 'Professional review is recorded' : 'Complete review before creating the draft'}</strong><small>The responsible professional remains accountable for certification and approval.</small></div>{studio.stage === 'READY' ? <button className="primary" disabled={busy === 'studio-apply'} onClick={onApply}>Create reviewed draft <span aria-hidden="true">→</span></button> : <button className="primary" disabled={blocking > 0 || studioBusy} onClick={() => onUpdate('completeReview')}>Complete professional review</button>}</div></section>
+      <section className="studio-validation" aria-labelledby="studio-validation-title"><div className="studio-section-head"><div><p className="eyebrow">Deterministic validation</p><h2 id="studio-validation-title">Rules decide readiness, not the extraction model</h2></div><Status label={blocking ? `${blocking} BLOCKING` : review ? `${review} REVIEW` : 'READY TO SEAL'} tone={blocking ? 'attention' : review ? 'progress' : 'durable'} /></div><div className="validation-register">{studio.validations.map((check) => <article key={check.id}><Status label={check.state} tone={check.state === 'BLOCKING' ? 'attention' : check.state === 'REVIEW' ? 'progress' : 'durable'} /><div><strong>{check.label}</strong><p>{check.detail}</p><code>{check.ruleVersion}</code></div></article>)}</div><div className="action-bar"><div><strong>{studio.stage === 'READY' ? 'Professional review is recorded' : 'Complete review before creating the draft'}</strong><small>{studio.stage === 'READY' ? 'The responsible professional remains accountable for certification and approval.' : 'Available after one accepted or edited field and after every blocking issue is resolved.'}</small></div>{studio.stage === 'READY' ? <button className="primary" disabled={busy === 'studio-apply'} onClick={onApply}>Create reviewed draft <span aria-hidden="true">→</span></button> : <button className="primary" disabled={blocking > 0 || studioBusy} onClick={() => onUpdate('completeReview')}>{busy === 'studio-completeReview' ? 'Recording review…' : 'Complete professional review'}</button>}</div></section>
 
       <section className="studio-package" aria-labelledby="studio-package-title"><div className="studio-section-head"><div><p className="eyebrow">Downloadable filing package</p><h2 id="studio-package-title">Inspect every part before sealing</h2></div><span className="mono">{state.package?.hash ? shortHash(state.package.hash) : 'Preview checksum generated on download'}</span></div><div className="download-grid"><a href={`${API}?export=preview`}>Draft form PDF<small>Clearly labelled preview</small></a><a href={`${API}?export=evidence`}>Evidence report PDF<small>Field, source and excerpt</small></a><a href={`${API}?export=manifest`}>Attachment manifest<small>Hashes and MIME</small></a><a href={`${API}?export=validation`}>Validation report<small>Versioned rule results</small></a><a href={`${API}?export=review`}>Review history<small>Roles and decisions</small></a><a href={`${API}?export=package`}>Package JSON<small>Machine-readable record</small></a></div></section>
 
@@ -1285,8 +1311,8 @@ function LimitationsScreen() {
   return <section className="page-section narrow-page" aria-labelledby="limitations-title"><div className="page-heading"><div><p className="eyebrow">Product boundary</p><h1 id="limitations-title">What this workspace does not do</h1></div></div><ol className="limitations-list">{limitations.map((item, index) => <li key={item}><span className="mono">{String(index + 1).padStart(2, '0')}</span><p>{item}</p></li>)}</ol></section>;
 }
 
-function ErrorPanel({ error }: { error: DarjError }) {
-  return <div className="error-panel" role="alert"><div><code>{error.code}</code><Status label={error.retryable ? 'RETRY SAFE' : 'ACTION REQUIRED'} tone="attention" /></div><strong>{error.summary}</strong><p>{error.detail}</p><small>Stage: {error.stage} · Correlation: {error.correlationId}</small></div>;
+function ErrorPanel({ error, toast = false, onDismiss }: { error: DarjError; toast?: boolean; onDismiss?: () => void }) {
+  return <div id="darj-error" className={`error-panel ${toast ? 'error-toast' : ''}`} role="alert" aria-live="assertive" tabIndex={-1}><div><code>{error.code}</code><span className="error-panel-actions"><Status label={error.retryable ? 'RETRY SAFE' : 'ACTION REQUIRED'} tone="attention" />{onDismiss && <button type="button" onClick={onDismiss} aria-label="Dismiss message">×</button>}</span></div><strong>{error.summary}</strong><p>{error.detail}</p><small>Stage: {error.stage} · Correlation: {error.correlationId}</small></div>;
 }
 
 function Status({ label, tone }: { label: string; tone: 'durable' | 'progress' | 'attention' }) {
@@ -1438,21 +1464,23 @@ function pathForScreen(screen: Screen, caseId = 'DARJ-DEMO-AOC4-01') {
   } satisfies Record<Screen, string>)[screen];
 }
 
-type ReviewerScenario = 'kill-tab' | 'lost-response' | 'lost-callback' | 'paused' | 'lineage';
+type ReviewerScenario = 'documents' | 'kill-tab' | 'lost-response' | 'lost-callback' | 'paused' | 'lineage';
 
 function readReviewerScenario(): ReviewerScenario | null {
   if (typeof window === 'undefined') return null;
   const value = new URLSearchParams(window.location.search).get('review');
-  return value === 'kill-tab' || value === 'lost-response' || value === 'lost-callback' || value === 'paused' || value === 'lineage' ? value : null;
+  return value === 'documents' || value === 'kill-tab' || value === 'lost-response' || value === 'lost-callback' || value === 'paused' || value === 'lineage' ? value : null;
 }
 
 function reviewerDestination(scenario: ReviewerScenario): Screen {
+  if (scenario === 'documents') return 'studio';
   if (scenario === 'kill-tab') return 'prepare';
   if (scenario === 'lineage') return 'lineage';
   return 'recovery';
 }
 
 function reviewerPath(scenario: ReviewerScenario, caseId: string) {
+  if (scenario === 'documents') return `/filings/${caseId}/studio?review=${scenario}`;
   if (scenario === 'kill-tab') return `/filings/${caseId}/prepare?review=${scenario}`;
   if (scenario === 'lineage') return `/filings/${caseId}/lineage?review=${scenario}`;
   return `/recovery?review=${scenario}`;
@@ -1460,6 +1488,7 @@ function reviewerPath(scenario: ReviewerScenario, caseId: string) {
 
 function reviewerNotice(scenario: ReviewerScenario) {
   return ({
+    documents: 'Start here · Open a prepared AOC-4 package, inspect source evidence and record a professional review decision.',
     'kill-tab': 'Reviewer path 1 of 5 · Edit a field, close the tab and reopen this address to see local-first recovery.',
     'lost-response': 'Reviewer path 2 of 5 · Submission response-loss recovery is highlighted below.',
     'lost-callback': 'Reviewer path 3 of 5 · Payment callback reconciliation is highlighted below.',
