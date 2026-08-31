@@ -15,6 +15,21 @@ test('public entry is a registry command centre, themeable and links to the revi
   await expect(page.locator('.reviewer-links a')).toHaveCount(5);
 });
 
+test('light is the default and dark mode requires an explicit choice', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.goto('/login');
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await expect(page.getByRole('button', { name: /Accessibility · Dark mode/i })).toBeVisible();
+
+  await page.getByRole('button', { name: /Accessibility · Dark mode/i }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+
+  await page.reload();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await page.getByRole('button', { name: /Accessibility · Light mode/i }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+});
+
 test('a clean public visit does not probe the authenticated API', async ({ page }) => {
   const calls: string[] = [];
   await page.addInitScript(() => window.localStorage.setItem('darj-session-active', 'true'));

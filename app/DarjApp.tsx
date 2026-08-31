@@ -63,6 +63,7 @@ const EMPTY_CATALOGUE_SERVICES: CatalogService[] = [];
 
 const API = '/api/darj';
 const SESSION_HINT = 'darj-session-active';
+const THEME_CHOICE = 'darj-theme-choice';
 const PREPARE_SECTION_IDS = ['company', 'financials', 'governance', 'attachments'] as const;
 
 function setSessionHint(active: boolean) {
@@ -99,7 +100,6 @@ export default function DarjApp() {
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeUploads = useRef(new Map<string, Upload>());
   const reviewerAutoStarted = useRef(false);
-  const themeInitialised = useRef(false);
 
   useEffect(() => {
     queueMicrotask(() => {
@@ -109,25 +109,29 @@ export default function DarjApp() {
   }, []);
 
   useEffect(() => {
-    const saved = window.localStorage.getItem('darj-theme');
-    const preferred: Theme = saved === 'dark' || saved === 'light' ? saved : window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-    queueMicrotask(() => {
-      if (!themeInitialised.current) {
-        themeInitialised.current = true;
-        setTheme(preferred);
-      }
-    });
+    try {
+      const saved = window.localStorage.getItem(THEME_CHOICE);
+      if (saved === 'dark') queueMicrotask(() => setTheme('dark'));
+      // Remove the legacy value because it may have been written automatically
+      // from the operating-system colour preference in an earlier release.
+      window.localStorage.removeItem('darj-theme');
+    } catch {
+      // Light remains the default when browser preference storage is unavailable.
+    }
   }, []);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     document.documentElement.style.colorScheme = theme;
-    window.localStorage.setItem('darj-theme', theme);
   }, [theme]);
 
   const toggleTheme = () => {
-    themeInitialised.current = true;
-    setTheme((current) => current === 'light' ? 'dark' : 'light');
+    setTheme((current) => {
+      const next = current === 'light' ? 'dark' : 'light';
+      try { window.localStorage.setItem(THEME_CHOICE, next); }
+      catch { /* The current page still changes theme when storage is unavailable. */ }
+      return next;
+    });
   };
 
   const refresh = useCallback(async () => {
